@@ -1,8 +1,10 @@
 import { Database } from "bun:sqlite";
 import { readdirSync, statSync } from "node:fs";
-import { resolve, basename } from "node:path";
+import { resolve, basename, sep } from "node:path";
 
 const PROJECT_ROOT = resolve(import.meta.dir, "../..");
+const PROJECT_ROOT_PREFIX = PROJECT_ROOT.endsWith(sep) ? PROJECT_ROOT : PROJECT_ROOT + sep;
+const SLUG_RE = /^[A-Za-z0-9._-]+$/;
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS attempts (
@@ -37,8 +39,37 @@ const SCHEMA = `
 
 const cache = new Map<string, Database>();
 
+export class InvalidSlugError extends Error {}
+
+function validateSlug(slug: string): void {
+  if (!SLUG_RE.test(slug) || slug === "." || slug === "..") {
+    throw new InvalidSlugError(`invalid slug: ${slug}`);
+  }
+}
+
 export function slugToPath(slug: string): string {
-  return resolve(PROJECT_ROOT, `${slug}.db`);
+  validateSlug(slug);
+  const p = resolve(PROJECT_ROOT, `${slug}.db`);
+  if (!p.startsWith(PROJECT_ROOT_PREFIX)) {
+    throw new InvalidSlugError(`slug escapes project root: ${slug}`);
+  }
+  return p;
+}
+
+export function isKnownExam(slug: string): boolean {
+  if (!SLUG_RE.test(slug)) return false;
+  let path: string;
+  try {
+    path = slugToPath(slug);
+  } catch {
+    return false;
+  }
+  try {
+    statSync(path);
+  } catch {
+    return false;
+  }
+  return true;
 }
 
 export function openDb(slug: string): Database {
@@ -48,7 +79,7 @@ export function openDb(slug: string): Database {
   try {
     statSync(path);
   } catch {
-    throw new Error(`exam DB not found: ${path}`);
+    throw new InvalidSlugError(`exam DB not found: ${slug}`);
   }
   d = new Database(path);
   d.exec(SCHEMA);
@@ -74,6 +105,7 @@ export function discoverExams(): ExamSummary[] {
   const out: ExamSummary[] = [];
   for (const f of files) {
     const slug = basename(f, ".db");
+    if (!SLUG_RE.test(slug) || slug === "." || slug === "..") continue;
     let db: Database;
     try {
       db = openDb(slug);
@@ -88,14 +120,14 @@ export function discoverExams(): ExamSummary[] {
       .get();
     if (!hasQ || hasQ.n === 0) continue;
     const meta = db
-      .query<{ exam: string; n: number; tn: number }, []>(
+      .query<{ exam: string; n: number; tn: number }, [string]>(
         `SELECT
-           COALESCE((SELECT exam FROM questions GROUP BY exam ORDER BY COUNT(*) DESC LIMIT 1), '${slug}') AS exam,
+           COALESCE((SELECT exam FROM questions GROUP BY exam ORDER BY COUNT(*) DESC LIMIT 1), ?) AS exam,
            (SELECT COUNT(*) FROM questions) AS n,
            (SELECT COUNT(*) FROM questions WHERE question_text_ja IS NOT NULL) AS tn
         `
       )
-      .get()!;
+      .get(slug)!;
     const att = db
       .query<{ a: number; c: number }, []>(
         `SELECT

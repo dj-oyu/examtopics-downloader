@@ -6,6 +6,28 @@ const app = new Hono();
 
 const reqCount = () => q.countAwaitingAgentAll();
 
+app.use("*", async (c, next) => {
+  if (c.req.method === "POST") {
+    const origin = c.req.header("origin");
+    const referer = c.req.header("referer");
+    const host = c.req.header("host");
+    const expected = host ? [`http://${host}`, `https://${host}`] : [];
+    const sameOrigin =
+      (origin && expected.includes(origin)) ||
+      (referer && expected.some((e) => referer.startsWith(e + "/")));
+    if (!sameOrigin) {
+      return c.text("forbidden: cross-origin POST blocked", 403);
+    }
+  }
+  await next();
+});
+
+app.use("/e/:slug/*", async (c, next) => {
+  const slug = c.req.param("slug");
+  if (!q.isKnownExam(slug)) return c.notFound();
+  await next();
+});
+
 app.get("/", (c) => {
   return c.html(<Home exams={q.discoverExams()} requestCount={reqCount()} />);
 });
@@ -172,5 +194,6 @@ app.get("/e/:slug/review", (c) => {
 });
 
 const port = parseInt(process.env.PORT ?? "3000", 10);
-console.log(`listening on http://localhost:${port}`);
-export default { fetch: app.fetch, port };
+const hostname = process.env.HOST ?? "127.0.0.1";
+console.log(`listening on http://${hostname}:${port}`);
+export default { fetch: app.fetch, port, hostname };
