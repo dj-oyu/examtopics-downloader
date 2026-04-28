@@ -1,3 +1,4 @@
+# original upstream rules
 examtopics_output.md
 examtopics_output.html
 examtopics_output.pdf
@@ -5,3 +6,34 @@ examtopics_output.pdf
 env/
 !examples/*
 .DS_STORE
+
+# === scraped exam data — NOT redistributable (legal risk) ===
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+/*.md
+!/README.md
+
+# === build / deps ===
+node_modules/
+bun.lockb
+
+# === editor / OS ===
+.claude/
+.vscode/
+.idea/
+GEMINI.md
+
+# === local workflow intermediates (one-shot scripts and JSON payloads) ===
+# JSON at repo root is treated as scraped/translation data (legal risk)
+/*.json
+# Loose Python helper scripts at repo root (workflow scratch). Real tooling lives in tools/
+/apply_translations*.py
+/bulk_save_final.py
+/fetch_*.py
+/inspect_questions.py
+/split_batches.py
+
+# transient tooling work
+/tools/_work/
