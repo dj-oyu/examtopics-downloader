@@ -126,13 +126,14 @@ agent prompt:
   Aim for questions_pending: 0. Report only range summaries.
 ```
 
-What the skill does on your behalf (encoded in `.gemini/skills/exam-translator.md`):
+What the skill does on your behalf (encoded in `.gemini/skills/exam-translator/SKILL.md`):
 
 1. **Status probe.** `uv run tools/translate.py -d <exam-id>.db status` — captures
    `questions_total` / `questions_pending` baseline.
-2. **Subagent delegation in EXECUTION MODE.** Spawns a generalist subagent and
-   loads `tools/translation_master_prompt.md` as the master prompt. That prompt
-   enforces the translation guidelines:
+2. **Subagent delegation in EXECUTION MODE.** Spawns the dedicated
+   `exam-translator-worker` subagent (defined at
+   `.gemini/agents/exam-translator-worker.md`, `max_turns: 200`). The agent
+   definition embeds the translation guidelines:
    - AWS service names stay in English (`Amazon S3`, `AWS Lambda`, `Amazon Aurora`).
    - 平叙文 (である調), not 敬体 (です・ます).
    - `(複数選択)` prefix on `question_text_ja` when `LENGTH(suggested_answer) > 1`.
@@ -140,9 +141,9 @@ What the skill does on your behalf (encoded in `.gemini/skills/exam-translator.m
    - `explanation_ja`: 2–3 sentences covering 正解の根拠 + 主要な不正解の根拠,
      drawing on the `comments` column when it contributes counter-arguments.
 3. **UTF-8-safe writes on Windows.** All bulk writes go through
-   `tools/batch_helper.py`, which reads a temp JSON file as raw bytes and pipes
-   it to `translate.py bulk-save` — sidesteps PowerShell's default US-ASCII pipe
-   corruption (see "Encoding / Windows tips").
+   `.gemini/skills/exam-translator/scripts/batch_helper.py`, which reads a temp
+   JSON file as raw bytes and pipes it to `translate.py bulk-save` — sidesteps
+   PowerShell's default US-ASCII pipe corruption (see "Encoding / Windows tips").
 4. **Self-paced re-invocation.** When a subagent reaches its turn/token limit,
    the orchestrator inspects the reported ID range and re-invokes for the next
    batch without prompting the user.

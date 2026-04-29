@@ -270,14 +270,25 @@ def cmd_unsave(conn: sqlite3.Connection, args) -> None:
 
 
 def cmd_bulk_next(conn: sqlite3.Connection, args) -> None:
-    rows = conn.execute(
-        "SELECT id FROM questions WHERE question_text_ja IS NULL ORDER BY id LIMIT ?",
-        (args.limit,),
-    ).fetchall()
+    if args.include_incomplete:
+        sql = (
+            "SELECT id FROM questions q "
+            "WHERE q.question_text_ja IS NULL "
+            "   OR q.explanation_ja IS NULL "
+            "   OR EXISTS (SELECT 1 FROM choices c "
+            "              WHERE c.question_id = q.id AND c.text_ja IS NULL) "
+            "ORDER BY id LIMIT ?"
+        )
+    else:
+        sql = (
+            "SELECT id FROM questions WHERE question_text_ja IS NULL "
+            "ORDER BY id LIMIT ?"
+        )
+    rows = conn.execute(sql, (args.limit,)).fetchall()
     if not rows:
         print(json.dumps([], ensure_ascii=False))
         return
-    
+
     payloads = [fetch_payload(conn, r["id"]) for r in rows]
     print(json.dumps(payloads, ensure_ascii=False, indent=2))
 
@@ -695,6 +706,13 @@ def main() -> int:
 
     p_bnext = sub.add_parser("bulk-next", help="dump multiple pending rows as a JSON array")
     p_bnext.add_argument("--limit", type=int, default=20)
+    p_bnext.add_argument(
+        "--include-incomplete",
+        action="store_true",
+        help="also return rows where question_text_ja is set but "
+        "explanation_ja or any choice.text_ja is still NULL "
+        "(mop-up pass for orphan rows)",
+    )
 
     p_save = sub.add_parser("save", help="read JSON from stdin, write _ja fields")
     p_save.add_argument("id", type=int)

@@ -151,7 +151,9 @@ choices(
 本プロジェクトには、AIエージェントが自律的に和訳を完遂するための「スキル」が定義されています。
 
 **指示例:**
-> 「`activate_skill` で `exam-translator` を起動し、`xxx.db` の和訳を完遂せよ。指示書 `tools/translation_master_prompt.md` と `tools/batch_helper.py` を活用して文字化けを避け、終わるまでバッチを回し続けろ。」
+> 「`activate_skill` で `exam-translator` を起動し、`xxx.db` の和訳を完遂せよ。終わるまでバッチを回し続けろ。」
+
+スキル本体が dedicated subagent (`exam-translator-worker`, `max_turns: 200`) に委譲し、UTF-8 セーフな保存 (`scripts/batch_helper.py`) と再起動ループを自動でハンドルします。
 
 この指示により、エージェントはターン制限や文字化け問題を自己解決しながら、最小限の報告でタスクを完了させます。
 
