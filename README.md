@@ -74,8 +74,12 @@ Each command line argument you can provide when running the program:
     	String to grep for in discussion links (required)
   -save-links
     	Optional argument to save unique links to questions
+  -sqlite string
+    	Optional path to a SQLite DB. When set, scraped data is written directly into this DB
+    	(cache JSON preserves all fields; manual fallback writes a subset). When -sqlite is set
+    	without an explicit -o, the legacy Markdown writer is skipped.
   -t string
-    	Optional argument to make cached requests faster to gh api
+    	GitHub PAT for cached scrape (env GH_PAT used when flag is empty; .env auto-loaded)
   -type string
     	Optionally include file type (default -> .md) (default "md")
 ```
@@ -163,6 +167,21 @@ https://www.examtopics.com/exams/google/video-advertising/
 
 When you add you `Github` PAT, it allows for more requests to the API, (up to 5000) which is needed when scraping bigger things.
 The cached data helps you access big dumps faster.
+
+If `-t` is empty, the program reads `GH_PAT` from the environment. A `./.env` file in the working directory is auto-loaded on startup (existing env vars win), so you can keep the PAT in `.env` instead of exporting it each session.
+
+### SQLite Output, `-sqlite`
+
+Write scraped questions directly into a SQLite DB, skipping the Markdown intermediate:
+
+```bash
+go run ./cmd/main.go -p amazon -s soa-c03 -c -sqlite soa-c03.db
+```
+
+- The DB schema covers `questions` (id, exam, topic, question_number, question_text, suggested_answer, confirmed_answer, timestamp, url UNIQUE, comments) and `choices` (question_id, label, text). `_ja` columns are reserved for translations populated separately by `tools/translate.py`.
+- Cache path preserves the full JSON payload; manual fallback writes a subset.
+- When `-sqlite` is set without an explicit `-o`, the Markdown writer is skipped (no `examtopics_output.md` clobber). Pass both `-sqlite` and `-o` to emit both formats in a single run.
+- Exits non-zero with a hint if zero questions matched (catches silent `-s` typos that the MD path swallowed as "Found 0 unique matching links"). The GitHub cache caps directory listing at 1000 entries — exams alphabetically after `AWS-Certified-SAP-on-AWS` miss the cache and need the manual fallback.
 
 ### No Cache Arg, `-no-cache`
 
