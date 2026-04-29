@@ -146,11 +146,14 @@ choices(
 )
 ```
 
-## クエリ例
+### エージェント向け: スキルによる自動和訳 (推奨)
 
-```bash
-# 和訳完了率
-uv run tools/translate.py -d soa-c03.db status
+本プロジェクトには、AIエージェントが自律的に和訳を完遂するための「スキル」が定義されています。
+
+**指示例:**
+> 「`activate_skill` で `exam-translator` を起動し、`xxx.db` の和訳を完遂せよ。指示書 `tools/translation_master_prompt.md` と `tools/batch_helper.py` を活用して文字化けを避け、終わるまでバッチを回し続けろ。」
+
+この指示により、エージェントはターン制限や文字化け問題を自己解決しながら、最小限の報告でタスクを完了させます。
 
 # 任意の SQL を叩く (sqlite3 CLI が無くても uv で)
 uv run python -c "
