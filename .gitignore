@@ -26,6 +26,14 @@ bun.lockb
 .idea/
 GEMINI.md
 
+# === agent config: ignore everything under .gemini/ except whitelisted skills.
+# Pattern uses /* + re-include to bypass git's "cannot re-include if parent
+# directory is excluded" limitation that breaks plain `!.gemini/skills/foo.md`.
+.gemini/*
+!.gemini/skills/
+.gemini/skills/*
+!.gemini/skills/exam-translator.md
+
 # === local workflow intermediates (one-shot scripts and JSON payloads) ===
 # JSON at repo root is treated as scraped/translation data (legal risk)
 /*.json
