@@ -2,35 +2,47 @@ import type { FC, PropsWithChildren } from "hono/jsx";
 import type { ExamSummary } from "../db";
 
 export const Layout: FC<
-  PropsWithChildren<{ title: string; requestCount?: number }>
-> = ({ title, requestCount = 0, children }) => (
-  <html lang="ja">
-    <head>
-      <meta charset="utf-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>{title} — Exam Studio</title>
-      <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
-    </head>
-    <body class="min-h-screen bg-gray-50 text-gray-900">
-      <header class="bg-white border-b">
-        <nav class="max-w-3xl mx-auto px-4 py-3 flex gap-4 items-center">
-          <a href="/" class="font-semibold">
-            Exam Studio
-          </a>
-          <a href="/requests" class="text-amber-700 hover:underline ml-auto">
-            🙏 解説求む{" "}
-            {requestCount > 0 && (
-              <span class="ml-1 px-2 py-0.5 text-xs bg-amber-500 text-white rounded-full">
-                {requestCount}
-              </span>
-            )}
-          </a>
-        </nav>
-      </header>
-      <main class="max-w-3xl mx-auto px-4 py-6">{children}</main>
-    </body>
-  </html>
-);
+  PropsWithChildren<{
+    title: string;
+    requestCount?: number;
+    /**
+     * Use a wider container suitable for two-column layouts (e.g. the
+     * question page with a question/chat split). Default narrow keeps list
+     * pages comfortable to read.
+     */
+    wide?: boolean;
+  }>
+> = ({ title, requestCount = 0, wide = false, children }) => {
+  const widthCls = wide ? "max-w-7xl" : "max-w-3xl";
+  return (
+    <html lang="ja">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>{title} — Exam Studio</title>
+        <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+      </head>
+      <body class="min-h-screen bg-gray-50 text-gray-900">
+        <header class="bg-white border-b">
+          <nav class={`${widthCls} mx-auto px-4 py-3 flex gap-4 items-center`}>
+            <a href="/" class="font-semibold">
+              Exam Studio
+            </a>
+            <a href="/requests" class="text-amber-700 hover:underline ml-auto">
+              🙏 解説求む{" "}
+              {requestCount > 0 && (
+                <span class="ml-1 px-2 py-0.5 text-xs bg-amber-500 text-white rounded-full">
+                  {requestCount}
+                </span>
+              )}
+            </a>
+          </nav>
+        </header>
+        <main class={`${widthCls} mx-auto px-4 py-6`}>{children}</main>
+      </body>
+    </html>
+  );
+};
 
 export const Home: FC<{ exams: ExamSummary[]; requestCount: number }> = ({
   exams,

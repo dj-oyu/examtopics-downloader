@@ -7,7 +7,9 @@ import type {
   ThreadWithMessages,
 } from "../db";
 import { parseCitations } from "../db";
+import { loadClientScript } from "../client/loader";
 import { renderMarkdown } from "./markdown";
+import { formatLocalTimestamp } from "./timestamps";
 
 const REASON_LABEL: Record<ReasonCode, { label: string; color: string }> = {
   comprehension: { label: "読み違い", color: "bg-gray-100 text-gray-700" },
@@ -64,6 +66,33 @@ const CitationList: FC<{ items: Citation[] }> = ({ items }) => (
   </details>
 );
 
+const ThinkingBubble: FC<{ tid: number; visible: boolean }> = ({
+  tid,
+  visible,
+}) => (
+  <div
+    id={`agent-thinking-${tid}`}
+    class="mt-2 pl-3 py-2 border-l-4 border-blue-400 bg-blue-50"
+    style={visible ? "" : "display:none"}
+  >
+    <div class="flex justify-between text-xs text-gray-600 mb-1">
+      <span class="font-mono">🤖 agent</span>
+      <span class="text-gray-400">応答中…</span>
+    </div>
+    <div class="flex items-center gap-1.5 py-1">
+      <span class="w-2 h-2 rounded-full bg-blue-400 animate-bounce"></span>
+      <span
+        class="w-2 h-2 rounded-full bg-blue-400 animate-bounce"
+        style="animation-delay:0.15s"
+      ></span>
+      <span
+        class="w-2 h-2 rounded-full bg-blue-400 animate-bounce"
+        style="animation-delay:0.3s"
+      ></span>
+    </div>
+  </div>
+);
+
 const MessageBubble: FC<{
   id: number;
   role: "user" | "agent";
@@ -90,7 +119,7 @@ const MessageBubble: FC<{
           {author && <span class="ml-1 text-gray-500">({author})</span>}
           {role === "agent" && reason_code && <ReasonBadge code={reason_code} />}
         </span>
-        <span>{created_at}</span>
+        <span>{formatLocalTimestamp(created_at)}</span>
       </div>
       {role === "agent" ? (
         <div class="prose prose-sm max-w-none leading-relaxed">
@@ -105,132 +134,8 @@ const MessageBubble: FC<{
 };
 
 const ThreadLiveScript: FC<{ slug: string; tid: number }> = ({ slug, tid }) => {
-  const slugLit = JSON.stringify(slug);
-  const tidLit = String(tid);
-  const js = `
-(function(){
-  var slug = ${slugLit};
-  var tid = ${tidLit};
-  var ol = document.getElementById("messages-" + tid);
-  var status = document.getElementById("agent-status-" + tid);
-  if (!ol) return;
-  var ROLE_CLASS = {
-    user: "border-amber-400 bg-amber-50",
-    agent: "border-blue-400 bg-blue-50"
-  };
-  function setStatus(text, kind){
-    if (!status) return;
-    if (!text) {
-      status.style.display = "none";
-      status.textContent = "";
-      return;
-    }
-    status.style.display = "inline-flex";
-    status.className = "ml-2 text-xs inline-flex items-center gap-1 " +
-      (kind === "error" ? "text-red-600" : "text-blue-600");
-    var dotClass = kind === "error"
-      ? "inline-block w-2 h-2 rounded-full bg-red-500"
-      : "inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse";
-    status.innerHTML = '<span class="' + dotClass + '"></span><span></span>';
-    status.lastChild.textContent = text;
-  }
-  var REASON_META = {
-    comprehension: { label: "読み違い", cls: "bg-gray-100 text-gray-700" },
-    spec:          { label: "仕様",     cls: "bg-blue-100 text-blue-800" },
-    ambiguous:     { label: "曖昧",     cls: "bg-amber-100 text-amber-800" },
-    translation:   { label: "訳語修正", cls: "bg-purple-100 text-purple-800" }
-  };
-  function citationHost(url){
-    try { return new URL(url).host; } catch (_) { return url; }
-  }
-  function renderCitations(items){
-    var details = document.createElement("details");
-    details.className = "mt-2 text-xs"; details.open = true;
-    var summary = document.createElement("summary");
-    summary.className = "cursor-pointer text-gray-600 hover:text-gray-800";
-    summary.textContent = "\u{1F4DA} 出典 (" + items.length + ")";
-    details.appendChild(summary);
-    var ul = document.createElement("ul");
-    ul.className = "mt-1 space-y-1 pl-4";
-    items.forEach(function(c){
-      var li = document.createElement("li");
-      li.className = "leading-snug";
-      var a = document.createElement("a");
-      a.href = c.url; a.target = "_blank"; a.rel = "noopener";
-      a.className = "text-blue-600 hover:underline break-all";
-      a.textContent = c.title || citationHost(c.url);
-      li.appendChild(a);
-      if (c.title) {
-        var host = document.createElement("span");
-        host.className = "ml-1 text-gray-400 text-[10px]";
-        host.textContent = "(" + citationHost(c.url) + ")";
-        li.appendChild(host);
-      }
-      ul.appendChild(li);
-    });
-    details.appendChild(ul);
-    return details;
-  }
-  function renderMessage(m){
-    var li = document.createElement("li");
-    li.className = "pl-3 py-2 border-l-4 " + (ROLE_CLASS[m.role] || "");
-    li.dataset.msgId = String(m.id);
-    var head = document.createElement("div");
-    head.className = "flex justify-between text-xs text-gray-600 mb-1";
-    var left = document.createElement("span");
-    left.className = "font-mono";
-    left.textContent = (m.role === "user" ? "\u{1F64B} user" : "\u{1F916} agent") + (m.author ? " (" + m.author + ")" : "");
-    if (m.role === "agent" && m.reason_code && REASON_META[m.reason_code]) {
-      var rb = document.createElement("span");
-      var meta = REASON_META[m.reason_code];
-      rb.className = "inline-block ml-2 px-2 py-0.5 text-xs rounded font-mono " + meta.cls;
-      rb.textContent = meta.label;
-      left.appendChild(rb);
-    }
-    var right = document.createElement("span");
-    right.textContent = m.created_at;
-    head.appendChild(left); head.appendChild(right);
-    var body;
-    if (m.role === "agent" && m.content_html) {
-      body = document.createElement("div");
-      body.className = "prose prose-sm max-w-none leading-relaxed";
-      body.innerHTML = m.content_html;
-    } else {
-      body = document.createElement("p");
-      body.className = "text-sm whitespace-pre-wrap leading-relaxed";
-      body.textContent = m.content;
-    }
-    li.appendChild(head); li.appendChild(body);
-    if (m.role === "agent" && Array.isArray(m.citations) && m.citations.length > 0) {
-      li.appendChild(renderCitations(m.citations));
-    }
-    return li;
-  }
-  function refresh(){
-    return fetch("/e/" + slug + "/threads/" + tid + "/messages.json")
-      .then(function(r){ if (!r.ok) throw new Error("status " + r.status); return r.json(); })
-      .then(function(data){
-        var seen = {};
-        Array.prototype.forEach.call(ol.children, function(li){
-          if (li.dataset && li.dataset.msgId) seen[li.dataset.msgId] = true;
-        });
-        data.messages.forEach(function(m){
-          if (!seen[String(m.id)]) ol.appendChild(renderMessage(m));
-        });
-        if (data.status !== "open") { location.reload(); }
-      })
-      .catch(function(e){ console.error("[thread-live] refresh failed", e); });
-  }
-  var es = new EventSource("/e/" + slug + "/threads/" + tid + "/events");
-  es.onmessage = function(e){
-    var ev; try { ev = JSON.parse(e.data); } catch (_) { return; }
-    if (ev.type === "spawning") setStatus("\u{1F916} エージェント応答中…", "info");
-    else if (ev.type === "agent-message") { setStatus("", "info"); refresh(); }
-    else if (ev.type === "error") setStatus("⚠ " + (ev.message || "agent error"), "error");
-    else if (ev.type === "closed") refresh();
-  };
-  es.onerror = function(){};
-})();`;
+  const config = JSON.stringify({ slug, tid });
+  const js = `${loadClientScript("thread-live")}\ninitThreadLive(${config});`;
   return <script>{raw(js)}</script>;
 };
 
@@ -238,10 +143,11 @@ export const ThreadPanel: FC<{
   slug: string;
   q: Question;
   thread: ThreadWithMessages | null;
-}> = ({ slug, q, thread }) => {
+  explainPending?: boolean;
+}> = ({ slug, q, thread, explainPending = false }) => {
   if (!thread) {
     return (
-      <details class="border-t pt-4">
+      <details>
         <summary class="text-sm text-amber-700 cursor-pointer hover:underline">
           🙏 解説スレッドを作成する
         </summary>
@@ -275,7 +181,7 @@ export const ThreadPanel: FC<{
   const statusId = `agent-status-${thread.id}`;
 
   return (
-    <section class="border-t pt-4 space-y-3">
+    <section class="space-y-3">
       <header class="flex items-baseline justify-between">
         <h3 class="font-semibold text-amber-800">
           💬 解説スレッド #{thread.id}
@@ -286,11 +192,23 @@ export const ThreadPanel: FC<{
           </span>
           <span
             id={statusId}
-            class="ml-2 text-xs text-gray-500"
-            style="display:none"
-          ></span>
+            class={
+              "ml-2 text-xs inline-flex items-center gap-1 " +
+              (explainPending ? "text-blue-600" : "text-gray-500")
+            }
+            style={explainPending ? "" : "display:none"}
+          >
+            {explainPending && (
+              <>
+                <span class="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
+                <span>🤖 エージェント応答中…</span>
+              </>
+            )}
+          </span>
         </h3>
-        <span class="text-xs text-gray-500">{thread.created_at}</span>
+        <span class="text-xs text-gray-500">
+          {formatLocalTimestamp(thread.created_at)}
+        </span>
       </header>
       <ol id={olId} class="space-y-2">
         {thread.messages.map((m) => (
@@ -305,7 +223,9 @@ export const ThreadPanel: FC<{
           />
         ))}
       </ol>
+      <ThinkingBubble tid={thread.id} visible={explainPending} />
       <form
+        id={`reply-form-${thread.id}`}
         method="POST"
         action={`/e/${slug}/threads/${thread.id}/reply`}
         class="space-y-2"
@@ -315,12 +235,22 @@ export const ThreadPanel: FC<{
           required
           rows={2}
           maxlength={2000}
-          class="w-full px-2 py-1 border rounded text-sm"
-          placeholder="返信を入力"
+          disabled={explainPending || undefined}
+          class={
+            "w-full px-2 py-1 border rounded text-sm " +
+            (explainPending ? "bg-gray-100 text-gray-400 cursor-not-allowed" : "")
+          }
+          placeholder={explainPending ? "エージェント応答中…" : "返信を入力"}
         />
         <button
           type="submit"
-          class="px-3 py-1 text-sm bg-amber-500 hover:bg-amber-600 text-white rounded"
+          disabled={explainPending || undefined}
+          class={
+            "px-3 py-1 text-sm rounded " +
+            (explainPending
+              ? "bg-gray-300 text-gray-500 cursor-not-allowed"
+              : "bg-amber-500 hover:bg-amber-600 text-white")
+          }
         >
           返信
         </button>

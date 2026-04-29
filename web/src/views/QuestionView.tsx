@@ -7,6 +7,7 @@ import type {
 import { Layout } from "./Layout";
 import { ThreadPanel } from "./Thread";
 import { QuestionLiveScript, RetranslatePanel } from "./Retranslate";
+import { formatLocalTimestamp } from "./timestamps";
 
 export type AttemptResult = { correct: boolean; selected: string };
 
@@ -64,6 +65,7 @@ export type QuestionViewProps = QuestionDetail & {
   result?: AttemptResult | null;
   thread: ThreadWithMessages | null;
   retranslatePending: boolean;
+  explainPending?: boolean;
   requestCount: number;
 };
 
@@ -77,12 +79,13 @@ export const QuestionView: FC<QuestionViewProps> = ({
   result,
   thread,
   retranslatePending,
+  explainPending = false,
   requestCount,
 }) => {
   const isMulti = q.suggested_answer.length > 1;
   const picked = new Set(result ? result.selected.split("") : []);
   return (
-    <Layout title={`Q${q.question_number}`} requestCount={requestCount}>
+    <Layout title={`Q${q.question_number}`} requestCount={requestCount} wide>
       <div class="mb-4 flex justify-between items-baseline text-sm">
         <a href={`/e/${slug}/q`} class="text-blue-600 hover:underline">
           ← 一覧
@@ -110,90 +113,112 @@ export const QuestionView: FC<QuestionViewProps> = ({
           )}
         </div>
       </div>
-      <article class="bg-white rounded-lg shadow p-6 space-y-4">
-        <p class="leading-relaxed">{q.question_text_ja ?? q.question_text}</p>
-        {q.question_text_ja && (
-          <details class="text-sm">
-            <summary class="text-gray-500 cursor-pointer">原文を表示</summary>
-            <p class="mt-2 text-gray-700">{q.question_text}</p>
-          </details>
-        )}
 
-        <form
-          method="POST"
-          action={`/e/${slug}/q/${q.id}/attempt`}
-          class="space-y-1 pt-2"
-        >
-          {choices.map((c) => (
-            <label class="flex gap-3 items-start cursor-pointer hover:bg-gray-50 p-2 rounded">
-              <input
-                type={isMulti ? "checkbox" : "radio"}
-                name="selected"
-                value={c.label}
-                checked={picked.has(c.label) || undefined}
-                disabled={result ? true : undefined}
-                class="mt-1"
-              />
-              <div class="flex-1">
-                <div>
-                  <span class="font-mono font-bold mr-2">{c.label}.</span>
-                  <span>{c.text_ja ?? c.text}</span>
-                </div>
-                {c.text_ja && (
-                  <details class="mt-1">
-                    <summary class="text-xs text-gray-400 cursor-pointer">
-                      原文
-                    </summary>
-                    <div class="text-xs text-gray-600 mt-1">{c.text}</div>
-                  </details>
-                )}
-              </div>
-            </label>
-          ))}
-          {!result && (
-            <button
-              type="submit"
-              class="mt-3 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded"
-            >
-              解答する
-            </button>
+      {/*
+        On lg+ split into two columns: question pane stays sticky on the left
+        while the chat pane scrolls naturally on the right. On smaller
+        viewports the panes stack as two cards.
+      */}
+      <div class="lg:grid lg:grid-cols-2 lg:gap-6 lg:items-start">
+        <article class="bg-white rounded-lg shadow p-6 space-y-4 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
+          <p class="leading-relaxed">{q.question_text_ja ?? q.question_text}</p>
+          {q.question_text_ja && (
+            <details class="text-sm">
+              <summary class="text-gray-500 cursor-pointer">原文を表示</summary>
+              <p class="mt-2 text-gray-700">{q.question_text}</p>
+            </details>
           )}
-        </form>
 
-        {result && (
-          <Result correct={result.correct} q={q} slug={slug} nextId={nextId} />
-        )}
+          <form
+            method="POST"
+            action={`/e/${slug}/q/${q.id}/attempt`}
+            class="space-y-1 pt-2"
+          >
+            {choices.map((c) => (
+              <label class="flex gap-3 items-start cursor-pointer hover:bg-gray-50 p-2 rounded">
+                <input
+                  type={isMulti ? "checkbox" : "radio"}
+                  name="selected"
+                  value={c.label}
+                  checked={picked.has(c.label) || undefined}
+                  disabled={result ? true : undefined}
+                  class="mt-1"
+                />
+                <div class="flex-1">
+                  <div>
+                    <span class="font-mono font-bold mr-2">{c.label}.</span>
+                    <span>{c.text_ja ?? c.text}</span>
+                  </div>
+                  {c.text_ja && (
+                    <details class="mt-1">
+                      <summary class="text-xs text-gray-400 cursor-pointer">
+                        原文
+                      </summary>
+                      <div class="text-xs text-gray-600 mt-1">{c.text}</div>
+                    </details>
+                  )}
+                </div>
+              </label>
+            ))}
+            {!result && (
+              <button
+                type="submit"
+                class="mt-3 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded"
+              >
+                解答する
+              </button>
+            )}
+          </form>
 
-        <RetranslatePanel
-          slug={slug}
-          qid={q.id}
-          pending={retranslatePending}
-        />
+          {result && (
+            <Result
+              correct={result.correct}
+              q={q}
+              slug={slug}
+              nextId={nextId}
+            />
+          )}
 
-        <ThreadPanel slug={slug} q={q} thread={thread} />
-        <QuestionLiveScript slug={slug} qid={q.id} />
+          <RetranslatePanel
+            slug={slug}
+            qid={q.id}
+            pending={retranslatePending}
+          />
 
-        {attempts.length > 0 && (
-          <details class="text-sm border-t pt-4">
-            <summary class="text-gray-500 cursor-pointer">
-              直近の解答履歴 ({attempts.length})
-            </summary>
-            <ul class="mt-2 space-y-1">
-              {attempts.map((a) => (
-                <li class="font-mono text-xs">
-                  <span
-                    class={a.is_correct ? "text-green-600" : "text-red-600"}
-                  >
-                    {a.is_correct ? "○" : "×"}
-                  </span>
-                  <span class="ml-2">{a.selected || "(未選択)"}</span>
-                  <span class="ml-2 text-gray-500">{a.attempted_at}</span>
-                </li>
-              ))}
-            </ul>
-          </details>
-        )}
-      </article>
+          {attempts.length > 0 && (
+            <details class="text-sm border-t pt-4">
+              <summary class="text-gray-500 cursor-pointer">
+                直近の解答履歴 ({attempts.length})
+              </summary>
+              <ul class="mt-2 space-y-1">
+                {attempts.map((a) => (
+                  <li class="font-mono text-xs">
+                    <span
+                      class={a.is_correct ? "text-green-600" : "text-red-600"}
+                    >
+                      {a.is_correct ? "○" : "×"}
+                    </span>
+                    <span class="ml-2">{a.selected || "(未選択)"}</span>
+                    <span class="ml-2 text-gray-500">
+                      {formatLocalTimestamp(a.attempted_at)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </article>
+
+        <article class="bg-white rounded-lg shadow p-6 mt-4 lg:mt-0">
+          <ThreadPanel
+            slug={slug}
+            q={q}
+            thread={thread}
+            explainPending={explainPending}
+          />
+          <QuestionLiveScript slug={slug} qid={q.id} />
+        </article>
+      </div>
     </Layout>
   );
 };

@@ -34,7 +34,8 @@ describe("QuestionLiveScript", () => {
     const html = await renderToString(
       <QuestionLiveScript slug="soa-c03" qid={42} />
     );
-    expect(html).toContain('"/e/" + slug + "/q/" + qid + "/events"');
+    expect(html).toContain("/q/${qid}/events");
+    expect(html).toContain('initQuestionLive({"slug":"soa-c03","qid":42})');
     expect(html).toContain('"translation-updated"');
     expect(html).toContain("location.reload()");
   });

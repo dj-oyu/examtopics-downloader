@@ -218,6 +218,12 @@ export function isRetranslatePending(slug: string, qid: number): boolean {
   return stack.some((j) => jobKey(j) === key);
 }
 
+export function isExplainPending(slug: string, tid: number): boolean {
+  const key = explainKey(slug, tid);
+  if (inFlight.has(key)) return true;
+  return stack.some((j) => jobKey(j) === key);
+}
+
 /**
  * Returns true if the close was applied immediately, false if buffered until
  * the in-flight agent run finishes.

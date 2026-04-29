@@ -70,12 +70,85 @@ describe("ThreadPanel — with messages", () => {
     expect(agentHtml).toContain("ユーザー返信待ち");
   });
 
+  test("explainPending=true renders the inline header dot AND a thinking bubble", async () => {
+    const thread = makeThreadWithMessages({ id: 9 });
+    const html = await renderToString(
+      <ThreadPanel
+        slug="x"
+        q={makeQuestion()}
+        thread={thread}
+        explainPending={true}
+      />
+    );
+    // header inline status
+    expect(html).toMatch(
+      /id="agent-status-9"[^>]*class="ml-2 text-xs inline-flex items-center gap-1 text-blue-600"/
+    );
+    expect(html).toContain("🤖 エージェント応答中…");
+    // chat-style thinking bubble after the messages list
+    expect(html).toMatch(
+      /id="agent-thinking-9"[^>]*class="mt-2 pl-3 py-2 border-l-4 border-blue-400 bg-blue-50"[^>]*style=""/
+    );
+    expect(html).toContain("animate-bounce");
+    expect(html).toContain("応答中…");
+  });
+
+  test("explainPending=true grays out and disables the reply form", async () => {
+    const thread = makeThreadWithMessages({ id: 9 });
+    const html = await renderToString(
+      <ThreadPanel
+        slug="x"
+        q={makeQuestion()}
+        thread={thread}
+        explainPending={true}
+      />
+    );
+    // Reply form's textarea + submit button both carry disabled and the busy
+    // class set. The inline ThreadLiveScript also contains REPLY_BUTTON_IDLE
+    // as a literal string, so anchor matches on the form attributes.
+    expect(html).toMatch(
+      /<textarea[^>]*name="content"[^>]*disabled=""[^>]*class="[^"]*bg-gray-100/
+    );
+    expect(html).toMatch(
+      /<button[^>]*type="submit"[^>]*disabled=""[^>]*class="[^"]*bg-gray-300/
+    );
+    expect(html).toMatch(
+      /<textarea[^>]*name="content"[^>]*placeholder="エージェント応答中…"/
+    );
+  });
+
+  test("explainPending=false leaves the reply form active", async () => {
+    const thread = makeThreadWithMessages({ id: 9 });
+    const html = await renderToString(
+      <ThreadPanel slug="x" q={makeQuestion()} thread={thread} />
+    );
+    expect(html).not.toMatch(/<textarea[^>]*name="content"[^>]*disabled/);
+    expect(html).not.toMatch(/<button[^>]*type="submit"[^>]*disabled/);
+    expect(html).toMatch(
+      /<button[^>]*type="submit"[^>]*class="[^"]*bg-amber-500/
+    );
+    expect(html).toMatch(
+      /<textarea[^>]*name="content"[^>]*placeholder="返信を入力"/
+    );
+  });
+
+  test("explainPending=false hides both the header status and the thinking bubble", async () => {
+    const thread = makeThreadWithMessages({ id: 9 });
+    const html = await renderToString(
+      <ThreadPanel slug="x" q={makeQuestion()} thread={thread} />
+    );
+    expect(html).toMatch(/id="agent-status-9"[^>]*style="display:none"/);
+    expect(html).toMatch(/id="agent-thinking-9"[^>]*style="display:none"/);
+    expect(html).not.toContain("🤖 エージェント応答中…");
+  });
+
   test("renders ThreadLiveScript wired to the thread events endpoint", async () => {
     const thread = makeThreadWithMessages({ id: 7 });
     const html = await renderToString(
       <ThreadPanel slug="soa-c03" q={makeQuestion()} thread={thread} />
     );
-    expect(html).toContain('"/e/" + slug + "/threads/" + tid + "/events"');
+    expect(html).toContain("/threads/${tid}/events");
+    expect(html).toContain('initThreadLive({"slug":"soa-c03","tid":7})');
     expect(html).toContain("agent-message");
   });
 

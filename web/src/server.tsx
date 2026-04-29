@@ -1,9 +1,11 @@
 import { Hono } from "hono";
 import { marked } from "marked";
 import * as q from "./db";
+import { formatLocalTimestamp } from "./views/timestamps";
 import {
   enqueueExplain,
   enqueueRetranslate,
+  isExplainPending,
   isRetranslatePending,
   recoverAwaitingThreads,
   requestClose,
@@ -91,6 +93,7 @@ app.get("/e/:slug/q/:id", (c) => {
       {...data}
       thread={thread}
       retranslatePending={isRetranslatePending(slug, id)}
+      explainPending={thread ? isExplainPending(slug, thread.id) : false}
       requestCount={reqCount()}
     />
   );
@@ -117,6 +120,7 @@ app.post("/e/:slug/q/:id/attempt", async (c) => {
       result={{ correct, selected }}
       thread={thread}
       retranslatePending={isRetranslatePending(slug, id)}
+      explainPending={thread ? isExplainPending(slug, thread.id) : false}
       requestCount={reqCount()}
     />
   );
@@ -237,7 +241,7 @@ app.get("/e/:slug/threads/:id/messages.json", (c) => {
           : null,
       reason_code: m.reason_code,
       citations: q.parseCitations(m.citations),
-      created_at: m.created_at,
+      created_at: formatLocalTimestamp(m.created_at),
     })),
   });
 });

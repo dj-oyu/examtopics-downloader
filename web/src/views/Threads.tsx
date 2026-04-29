@@ -1,6 +1,7 @@
 import type { FC } from "hono/jsx";
 import type { ThreadListRowAll } from "../db";
 import { Layout } from "./Layout";
+import { formatLocalTimestamp } from "./timestamps";
 
 export const Threads: FC<{
   rows: ThreadListRowAll[];
@@ -41,7 +42,9 @@ export const Threads: FC<{
                 >
                   {r.last_role === "user" ? "agent 返信待ち" : "user 返信待ち"}
                 </span>
-                <span class="ml-2 text-gray-500">{r.last_at}</span>
+                <span class="ml-2 text-gray-500">
+                  {formatLocalTimestamp(r.last_at)}
+                </span>
               </span>
             </div>
             <p class="mt-1 text-sm line-clamp-2">
