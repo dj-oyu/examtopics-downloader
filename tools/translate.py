@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS explanation_threads (
   question_id INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved','dismissed')),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  closed_at TEXT
+  closed_at TEXT,
+  agent_session_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_thr_qid ON explanation_threads(question_id);
 CREATE INDEX IF NOT EXISTS idx_thr_status ON explanation_threads(status);

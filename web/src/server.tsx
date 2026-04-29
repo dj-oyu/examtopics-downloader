@@ -1,6 +1,21 @@
 import { Hono } from "hono";
+import { marked } from "marked";
 import * as q from "./db";
+import { formatLocalTimestamp } from "./views/timestamps";
+import {
+  enqueueExplain,
+  enqueueRetranslate,
+  isExplainPending,
+  isRetranslatePending,
+  recoverAwaitingThreads,
+  requestClose,
+  subscribe,
+  subscribeQuestion,
+} from "./agent";
+import type { QuestionSseEvent, SseEvent } from "./agent";
 import { Home, QuestionList, QuestionView, Layout, Threads } from "./views";
+
+marked.setOptions({ gfm: true, breaks: false });
 
 const app = new Hono();
 
@@ -77,6 +92,8 @@ app.get("/e/:slug/q/:id", (c) => {
       slug={slug}
       {...data}
       thread={thread}
+      retranslatePending={isRetranslatePending(slug, id)}
+      explainPending={thread ? isExplainPending(slug, thread.id) : false}
       requestCount={reqCount()}
     />
   );
@@ -102,9 +119,65 @@ app.post("/e/:slug/q/:id/attempt", async (c) => {
       {...fresh}
       result={{ correct, selected }}
       thread={thread}
+      retranslatePending={isRetranslatePending(slug, id)}
+      explainPending={thread ? isExplainPending(slug, thread.id) : false}
       requestCount={reqCount()}
     />
   );
+});
+
+app.post("/e/:slug/q/:id/retranslate", (c) => {
+  const slug = c.req.param("slug");
+  const id = parseInt(c.req.param("id"), 10);
+  if (Number.isNaN(id)) return c.notFound();
+  const data = q.getQuestion(slug, id);
+  if (!data) return c.notFound();
+  q.clearQuestionTranslation(slug, id);
+  enqueueRetranslate(slug, id);
+  return c.redirect(`/e/${slug}/q/${id}`);
+});
+
+app.get("/e/:slug/q/:id/events", (c) => {
+  const slug = c.req.param("slug");
+  const qid = parseInt(c.req.param("id"), 10);
+  if (Number.isNaN(qid)) return c.notFound();
+  if (!q.getQuestion(slug, qid)) return c.notFound();
+
+  const stream = new ReadableStream({
+    start(controller) {
+      const enc = new TextEncoder();
+      const send = (event: QuestionSseEvent) => {
+        try {
+          controller.enqueue(
+            enc.encode(`data: ${JSON.stringify(event)}\n\n`)
+          );
+        } catch {}
+      };
+      const unsub = subscribeQuestion(slug, qid, send);
+      controller.enqueue(enc.encode(`: connected\n\n`));
+      const keepAlive = setInterval(() => {
+        try {
+          controller.enqueue(enc.encode(`: ping\n\n`));
+        } catch {}
+      }, 25000);
+      const abort = () => {
+        clearInterval(keepAlive);
+        unsub();
+        try {
+          controller.close();
+        } catch {}
+      };
+      c.req.raw.signal.addEventListener("abort", abort);
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "X-Accel-Buffering": "no",
+    },
+  });
 });
 
 app.post("/e/:slug/q/:id/threads", async (c) => {
@@ -114,7 +187,8 @@ app.post("/e/:slug/q/:id/threads", async (c) => {
   const content = ((form.content as string) || "").trim();
   if (!content) return c.redirect(`/e/${slug}/q/${id}`);
   if (q.getOpenThread(slug, id)) return c.redirect(`/e/${slug}/q/${id}`);
-  q.createThread(slug, id, content, "web");
+  const tid = q.createThread(slug, id, content, "web");
+  enqueueExplain(slug, tid);
   return c.redirect(`/e/${slug}/q/${id}`);
 });
 
@@ -123,7 +197,10 @@ app.post("/e/:slug/threads/:id/reply", async (c) => {
   const tid = parseInt(c.req.param("id"), 10);
   const form = await c.req.parseBody();
   const content = ((form.content as string) || "").trim();
-  if (content) q.appendMessage(slug, tid, "user", content, "web");
+  if (content) {
+    const m = q.appendMessage(slug, tid, "user", content, "web");
+    if (m) enqueueExplain(slug, tid);
+  }
   const t = q.getThread(slug, tid);
   return c.redirect(t ? `/e/${slug}/q/${t.question_id}` : "/requests");
 });
@@ -132,7 +209,7 @@ app.post("/e/:slug/threads/:id/resolve", (c) => {
   const slug = c.req.param("slug");
   const tid = parseInt(c.req.param("id"), 10);
   const t = q.getThread(slug, tid);
-  q.closeThread(slug, tid, "resolved");
+  requestClose(slug, tid, "resolved");
   return c.redirect(t ? `/e/${slug}/q/${t.question_id}` : "/requests");
 });
 
@@ -140,8 +217,76 @@ app.post("/e/:slug/threads/:id/dismiss", (c) => {
   const slug = c.req.param("slug");
   const tid = parseInt(c.req.param("id"), 10);
   const t = q.getThread(slug, tid);
-  q.closeThread(slug, tid, "dismissed");
+  requestClose(slug, tid, "dismissed");
   return c.redirect(t ? `/e/${slug}/q/${t.question_id}` : "/requests");
+});
+
+app.get("/e/:slug/threads/:id/messages.json", (c) => {
+  const slug = c.req.param("slug");
+  const tid = parseInt(c.req.param("id"), 10);
+  if (Number.isNaN(tid)) return c.notFound();
+  const t = q.getThread(slug, tid);
+  if (!t) return c.notFound();
+  return c.json({
+    id: t.id,
+    status: t.status,
+    messages: t.messages.map((m) => ({
+      id: m.id,
+      role: m.role,
+      author: m.author,
+      content: m.content,
+      content_html:
+        m.role === "agent"
+          ? (marked.parse(m.content, { async: false }) as string)
+          : null,
+      reason_code: m.reason_code,
+      citations: q.parseCitations(m.citations),
+      created_at: formatLocalTimestamp(m.created_at),
+    })),
+  });
+});
+
+app.get("/e/:slug/threads/:id/events", (c) => {
+  const slug = c.req.param("slug");
+  const tid = parseInt(c.req.param("id"), 10);
+  if (Number.isNaN(tid)) return c.notFound();
+  if (!q.getThread(slug, tid)) return c.notFound();
+
+  const stream = new ReadableStream({
+    start(controller) {
+      const enc = new TextEncoder();
+      const send = (event: SseEvent) => {
+        try {
+          controller.enqueue(
+            enc.encode(`data: ${JSON.stringify(event)}\n\n`)
+          );
+        } catch {}
+      };
+      const unsub = subscribe(slug, tid, send);
+      controller.enqueue(enc.encode(`: connected\n\n`));
+      const keepAlive = setInterval(() => {
+        try {
+          controller.enqueue(enc.encode(`: ping\n\n`));
+        } catch {}
+      }, 25000);
+      const abort = () => {
+        clearInterval(keepAlive);
+        unsub();
+        try {
+          controller.close();
+        } catch {}
+      };
+      c.req.raw.signal.addEventListener("abort", abort);
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "X-Accel-Buffering": "no",
+    },
+  });
 });
 
 app.get("/requests", (c) => {
@@ -196,4 +341,7 @@ app.get("/e/:slug/review", (c) => {
 const port = parseInt(process.env.PORT ?? "3000", 10);
 const hostname = process.env.HOST ?? "127.0.0.1";
 console.log(`listening on http://${hostname}:${port}`);
-export default { fetch: app.fetch, port, hostname };
+recoverAwaitingThreads();
+// idleTimeout: 0 keeps SSE connections open; default 10s would cut them
+// before our 25s keep-alive ping fires.
+export default { fetch: app.fetch, port, hostname, idleTimeout: 0 };

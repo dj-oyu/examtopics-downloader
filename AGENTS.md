@@ -323,6 +323,7 @@ The Web UI and `tools/translate.py` use the **same SQLite file as a shared bus**
 Whatever the agent writes via `reply` is immediately visible in the UI on the next
 page load, and vice versa.
 
+<!-- AGENT_REPLY_PROMPT_START -->
 ## Multi-turn explanation threads
 
 Schema (created on first open by web/ or translate.py via `CREATE TABLE IF NOT EXISTS`):
@@ -426,6 +427,41 @@ Selection priority (when multiple categories seem to apply):
 
 The user can also drive multi-turn dialogues via the web at `/e/:slug/q/:id` —
 typing in the textarea appends a `user` message to the same thread.
+<!-- AGENT_REPLY_PROMPT_END -->
+
+### Bun-driven agent autoresponder (web/src/agent.ts)
+
+When the web UI receives a user message (new thread or follow-up reply), Bun
+spawns a local `claude` CLI process to compose the agent reply automatically.
+Implementation invariants:
+
+- **Concurrency 1.** A single in-process LIFO stack drives one Claude process
+  at a time. Multiple awaiting threads queue; pushing the same `(slug, tid)`
+  twice is a no-op while it sits in-flight or in the queue.
+- **Session resume.** The first spawn for a thread runs without `--resume`;
+  the agent's stdout JSON yields a `session_id` which Bun stores in
+  `explanation_threads.agent_session_id`. Subsequent spawns for that thread
+  pass `--resume <session_id> -p "<latest user content>"` so Claude inherits
+  prior reasoning + AWS Docs MCP context.
+- **Resume failure fallback.** If `--resume` fails (session expired or
+  invalidated), the spawner retries once from scratch with the full INITIAL
+  prompt and overwrites `agent_session_id`.
+- **Deferred close.** If the user clicks resolve/dismiss while a thread is
+  in-flight, the close action is buffered in memory and applied after the
+  agent finishes — agent reply takes priority over user-side close.
+- **Re-enqueue on tail user.** After a spawn finishes, if the thread's last
+  message role is still `'user'` (e.g. the user added another reply during
+  the run), the thread is pushed back onto the stack for another cycle.
+- **SSE notification.** Web clients viewing a question subscribe to
+  `/e/:slug/threads/:tid/events`. The spawner pushes `agent-message` /
+  `error` events; the client fetches `messages.json` and appends new bubbles
+  without a page reload.
+- **Allowed tools.** `--allowed-tools "Bash,mcp__claude_ai_AWS_Knowledge_MCP_Server__*"`.
+  Bash is required to invoke `translate.py show-thread` / `reply`; the AWS
+  Docs MCP namespace is required for `reason_code='spec'|'ambiguous'`
+  citations.
+- **Working directory.** Repo root (so `uv run tools/translate.py -d <slug>.db`
+  resolves correctly).
 
 ## Multi-cert layout (per-DB)
 

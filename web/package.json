@@ -4,10 +4,13 @@
   "type": "module",
   "scripts": {
     "dev": "bun run --hot src/server.tsx",
-    "start": "bun run src/server.tsx"
+    "start": "bun run src/server.tsx",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
   },
   "dependencies": {
-    "hono": "^4.6.14"
+    "hono": "^4.6.14",
+    "marked": "^18.0.2"
   },
   "devDependencies": {
     "@types/bun": "latest",

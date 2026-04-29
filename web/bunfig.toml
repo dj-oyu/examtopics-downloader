@@ -1,0 +1,4 @@
+# Hono JSX runtime config — also picked up by `bun test` so JSX in test files
+# is transpiled to `hono/jsx/jsx-runtime` instead of the React default.
+jsx = "react-jsx"
+jsxImportSource = "hono/jsx"

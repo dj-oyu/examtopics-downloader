@@ -22,7 +22,8 @@ const SCHEMA = `
     question_id INTEGER NOT NULL,
     status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved','dismissed')),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    closed_at TEXT
+    closed_at TEXT,
+    agent_session_id TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_thr_qid ON explanation_threads(question_id);
   CREATE INDEX IF NOT EXISTS idx_thr_status ON explanation_threads(status);
@@ -265,6 +266,22 @@ export type Choice = {
 
 export type QuestionListRow = Question & { last_correct: number | null };
 
+export type Attempt = {
+  selected: string;
+  is_correct: number;
+  attempted_at: string;
+};
+
+export type Progress = { total: number; answered: number; correct: number };
+
+export type QuestionDetail = {
+  q: Question;
+  choices: Choice[];
+  attempts: Attempt[];
+  prevId: number | null;
+  nextId: number | null;
+};
+
 const sortLetters = (s: string) => s.split("").sort().join("");
 
 export function listQuestions(slug: string): QuestionListRow[] {
@@ -281,7 +298,7 @@ export function listQuestions(slug: string): QuestionListRow[] {
     .all();
 }
 
-export function getQuestion(slug: string, id: number) {
+export function getQuestion(slug: string, id: number): QuestionDetail | null {
   const db = openDb(slug);
   const q = db
     .query<Question, [number]>("SELECT * FROM questions WHERE id = ?")
@@ -293,10 +310,7 @@ export function getQuestion(slug: string, id: number) {
     )
     .all(id);
   const attempts = db
-    .query<
-      { selected: string; is_correct: number; attempted_at: string },
-      [number]
-    >(
+    .query<Attempt, [number]>(
       "SELECT selected, is_correct, attempted_at FROM attempts " +
         "WHERE question_id = ? ORDER BY id DESC LIMIT 5"
     )
@@ -344,7 +358,7 @@ export function listWrong(slug: string) {
     .all();
 }
 
-export function progress(slug: string) {
+export function progress(slug: string): Progress {
   const db = openDb(slug);
   const total = db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM questions").get()!.n;
   const answered = db
@@ -367,6 +381,7 @@ export type Thread = {
   status: "open" | "resolved" | "dismissed";
   created_at: string;
   closed_at: string | null;
+  agent_session_id: string | null;
 };
 
 export type ReasonCode =
@@ -376,6 +391,20 @@ export type ReasonCode =
   | "translation";
 
 export type Citation = { url: string; title?: string };
+
+export function parseCitations(json: string | null): Citation[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (c): c is Citation =>
+        c && typeof c === "object" && typeof c.url === "string"
+    );
+  } catch {
+    return [];
+  }
+}
 
 export type TranslationDiff = {
   before: {
@@ -551,4 +580,97 @@ export function countAwaitingAgentAll(): number {
 export function updateExplanation(slug: string, qid: number, ja: string) {
   const db = openDb(slug);
   db.run("UPDATE questions SET explanation_ja = ? WHERE id = ?", [ja, qid]);
+}
+
+export function clearQuestionTranslation(slug: string, qid: number): void {
+  const db = openDb(slug);
+  const tx = db.transaction((qid: number) => {
+    db.run(
+      "UPDATE questions SET question_text_ja = NULL, explanation_ja = NULL WHERE id = ?",
+      [qid]
+    );
+    db.run("UPDATE choices SET text_ja = NULL WHERE question_id = ?", [qid]);
+  });
+  tx(qid);
+}
+
+export function getOpenThreadIdForQuestion(
+  slug: string,
+  qid: number
+): number | null {
+  const db = openDb(slug);
+  const r = db
+    .query<{ id: number }, [number]>(
+      "SELECT id FROM explanation_threads WHERE question_id = ? AND status = 'open' " +
+        "ORDER BY id DESC LIMIT 1"
+    )
+    .get(qid);
+  return r ? r.id : null;
+}
+
+export function getThreadStatus(
+  slug: string,
+  tid: number
+): "open" | "resolved" | "dismissed" | null {
+  const db = openDb(slug);
+  const r = db
+    .query<{ status: "open" | "resolved" | "dismissed" }, [number]>(
+      "SELECT status FROM explanation_threads WHERE id = ?"
+    )
+    .get(tid);
+  return r ? r.status : null;
+}
+
+export function getThreadLastRole(
+  slug: string,
+  tid: number
+): "user" | "agent" | null {
+  const db = openDb(slug);
+  const r = db
+    .query<{ role: "user" | "agent" }, [number]>(
+      "SELECT role FROM explanation_messages WHERE thread_id = ? " +
+        "ORDER BY id DESC LIMIT 1"
+    )
+    .get(tid);
+  return r ? r.role : null;
+}
+
+export function getThreadAgentSessionId(
+  slug: string,
+  tid: number
+): string | null {
+  const db = openDb(slug);
+  const r = db
+    .query<{ agent_session_id: string | null }, [number]>(
+      "SELECT agent_session_id FROM explanation_threads WHERE id = ?"
+    )
+    .get(tid);
+  return r ? r.agent_session_id : null;
+}
+
+export function setThreadAgentSessionId(
+  slug: string,
+  tid: number,
+  sessionId: string | null
+): void {
+  const db = openDb(slug);
+  db.run("UPDATE explanation_threads SET agent_session_id = ? WHERE id = ?", [
+    sessionId,
+    tid,
+  ]);
+}
+
+export function getLatestUserContent(
+  slug: string,
+  tid: number
+): string | null {
+  const db = openDb(slug);
+  const r = db
+    .query<{ content: string }, [number]>(
+      "SELECT content FROM explanation_messages " +
+        "WHERE thread_id = ? AND role = 'user' " +
+        "ORDER BY id DESC LIMIT 1"
+    )
+    .get(tid);
+  return r ? r.content : null;
 }
