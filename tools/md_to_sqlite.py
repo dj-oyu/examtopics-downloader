@@ -42,7 +42,16 @@ CREATE TABLE IF NOT EXISTS questions (
     explanation_ja TEXT,
     timestamp TEXT,
     url TEXT UNIQUE,
-    comments TEXT
+    comments TEXT,
+    -- new columns mirrored from the Go writer (internal/sqlite/schema.go).
+    -- Python side never writes these; Go writer populates on cache-direct path.
+    exam_id INTEGER,
+    is_mc INTEGER,
+    answer_description TEXT,
+    question_images TEXT,
+    answer_images TEXT,
+    content_hash TEXT,
+    imported_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS choices (
@@ -53,8 +62,22 @@ CREATE TABLE IF NOT EXISTS choices (
     PRIMARY KEY (question_id, label)
 );
 
+-- mirrored from internal/sqlite/schema.go; Python side does not populate.
+CREATE TABLE IF NOT EXISTS discussion (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+    idx INTEGER NOT NULL,
+    poster TEXT,
+    content TEXT NOT NULL,
+    upvote_count INTEGER,
+    posted_at TEXT,
+    UNIQUE(question_id, idx)
+);
+
 CREATE INDEX IF NOT EXISTS idx_questions_exam ON questions(exam);
 CREATE INDEX IF NOT EXISTS idx_questions_topic ON questions(topic, question_number);
+CREATE INDEX IF NOT EXISTS idx_questions_url ON questions(url);
+CREATE INDEX IF NOT EXISTS idx_discussion_qid ON discussion(question_id);
 """
 
 

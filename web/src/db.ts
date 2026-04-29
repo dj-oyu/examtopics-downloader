@@ -35,6 +35,21 @@ const SCHEMA = `
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE INDEX IF NOT EXISTS idx_msg_thread ON explanation_messages(thread_id);
+
+  -- mirrored from internal/sqlite/schema.go so a UI-first DB still has the
+  -- table available for future per-poster discussion features. Web side never
+  -- populates these rows; the Go scraper writes them.
+  CREATE TABLE IF NOT EXISTS discussion (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    question_id INTEGER NOT NULL,
+    idx INTEGER NOT NULL,
+    poster TEXT,
+    content TEXT NOT NULL,
+    upvote_count INTEGER,
+    posted_at TEXT,
+    UNIQUE(question_id, idx)
+  );
+  CREATE INDEX IF NOT EXISTS idx_discussion_qid ON discussion(question_id);
 `;
 
 const cache = new Map<string, Database>();
