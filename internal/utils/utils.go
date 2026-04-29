@@ -68,39 +68,56 @@ func DeduplicateLinks(links []string) []string {
 	return unique
 }
 
+// ExtractQuestionNum pulls the integer following "question-" in a discussion
+// URL fragment. Returns 0 when the segment is absent or unparseable.
+func ExtractQuestionNum(url string) int {
+	parts := strings.Split(url, "question-")
+	if len(parts) < 2 {
+		return 0
+	}
+	numStr := strings.TrimSuffix(parts[1], "/")
+	numStr = strings.TrimSuffix(numStr, "-discussion")
+	num, _ := strconv.Atoi(numStr)
+	return num
+}
+
+// ExtractTopicNum pulls the integer following "topic-" in a discussion URL
+// fragment. Returns 0 when the segment is absent or unparseable.
+func ExtractTopicNum(url string) int {
+	parts := strings.Split(url, "topic-")
+	if len(parts) < 2 {
+		return 0
+	}
+	subParts := strings.Split(parts[1], "-")
+	if len(subParts) < 1 {
+		return 0
+	}
+	num, _ := strconv.Atoi(subParts[0])
+	return num
+}
+
+// DeriveExamDisplay turns a cache filename like
+// "AWS-Certified-Developer---Associate-DVA-C02_5.json?ref=main" into a
+// human-readable exam name "AWS Certified Developer Associate DVA C02"
+// consistent with what md_to_sqlite.py stores in questions.exam.
+func DeriveExamDisplay(filename string) string {
+	if i := strings.IndexByte(filename, '?'); i >= 0 {
+		filename = filename[:i]
+	}
+	reSuffix := regexp.MustCompile(`(_\d+)?\.json$`)
+	filename = reSuffix.ReplaceAllString(filename, "")
+	filename = strings.ReplaceAll(filename, "-", " ")
+	return strings.Join(strings.Fields(filename), " ")
+}
+
 func SortLinksByQuestionNumber(links []string) []string {
-	extractQuestionNum := func(url string) int {
-		parts := strings.Split(url, "question-")
-		if len(parts) < 2 {
-			return 0
-		}
-		numStr := strings.TrimSuffix(parts[1], "/")
-		numStr = strings.TrimSuffix(numStr, "-discussion")
-		num, _ := strconv.Atoi(numStr)
-		return num
-	}
-
-	extractTopicNum := func(url string) int {
-		parts := strings.Split(url, "topic-")
-		if len(parts) < 2 {
-			return 0
-		}
-		subParts := strings.Split(parts[1], "-")
-		if len(subParts) < 1 {
-			return 0
-		}
-		num, _ := strconv.Atoi(subParts[0])
-		return num
-	}
-
 	sort.Slice(links, func(i, j int) bool {
-		topicI := extractTopicNum(links[i])
-		topicJ := extractTopicNum(links[j])
-
+		topicI := ExtractTopicNum(links[i])
+		topicJ := ExtractTopicNum(links[j])
 		if topicI != topicJ {
 			return topicI < topicJ
 		}
-		return extractQuestionNum(links[i]) < extractQuestionNum(links[j])
+		return ExtractQuestionNum(links[i]) < ExtractQuestionNum(links[j])
 	})
 	return links
 }

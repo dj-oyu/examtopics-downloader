@@ -17,6 +17,20 @@ import (
 	"github.com/cheggaaa/pb/v3"
 )
 
+// cleanAnswer normalizes the raw text from `.correct-answer` into a compact
+// answer string like "A", "BD", "ACE". Whitespace and newlines are removed;
+// the FULL letter sequence is preserved (the legacy `[0]`-truncation bug at
+// scraper.go:35 turned multi-correct answers like BD/AE into B/A).
+// `md_to_sqlite.py` parses `**Answer:**` with regex `[A-Z]+`, so multi-letter
+// answers in the MD output are forward-compatible.
+func cleanAnswer(raw string) string {
+	s := strings.TrimSpace(raw)
+	s = strings.ReplaceAll(s, " ", "")
+	s = strings.ReplaceAll(s, "\n", "")
+	s = strings.ReplaceAll(s, "\t", "")
+	return s
+}
+
 func getDataFromLink(link string) *models.QuestionData {
 	doc, err := ParseHTML(link, *client)
 	if err != nil {
@@ -29,21 +43,18 @@ func getDataFromLink(link string) *models.QuestionData {
 		allQuestions = append(allQuestions, utils.CleanText(s.Text()))
 	})
 
-	answerText := strings.TrimSpace(doc.Find(".correct-answer").Text())
-	answer := ""
-	if len(answerText) > 0 {
-		answer = string(strings.ReplaceAll(strings.ReplaceAll(answerText, " ", ""), "\n", "")[0])
-	}
+	answer := cleanAnswer(doc.Find(".correct-answer").Text())
 
 	return &models.QuestionData{
-		Title:        utils.CleanText(doc.Find("h1").Text()),
-		Header:       strings.ReplaceAll(strings.TrimSpace(doc.Find(".question-discussion-header").Text()), "\t", ""),
-		Content:      utils.CleanText(doc.Find(".card-text").Text()),
-		Questions:    allQuestions,
-		Answer:       answer,
-		Timestamp:    utils.CleanText(doc.Find(".discussion-meta-data > i").Text()),
-		QuestionLink: link,
-		Comments:     utils.CleanText(doc.Find(".discussion-container").Text()),
+		Title:           utils.CleanText(doc.Find("h1").Text()),
+		Header:          strings.ReplaceAll(strings.TrimSpace(doc.Find(".question-discussion-header").Text()), "\t", ""),
+		Content:         utils.CleanText(doc.Find(".card-text").Text()),
+		Questions:       allQuestions,
+		Answer:          answer,
+		SuggestedAnswer: answer,
+		Timestamp:       utils.CleanText(doc.Find(".discussion-meta-data > i").Text()),
+		QuestionLink:    link,
+		Comments:        utils.CleanText(doc.Find(".discussion-container").Text()),
 	}
 }
 
@@ -75,45 +86,82 @@ func getJSONFromLink(link string) []*models.QuestionData {
 
 	fmt.Println("Processing content from:", downloadURL)
 
-	var questions []*models.QuestionData
-
 	if content.PageProps.Questions == nil {
 		log.Printf("no questions found in JSON content")
 		return nil
 	}
 
-	for _, q := range content.PageProps.Questions {
-		var comments string
-		for _, discussion := range q.Discussion {
-			comments += fmt.Sprintf("[%s] %s\n", discussion.Poster, discussion.Content)
-		}
+	return ConvertCachedJSON(content, utils.GetNameFromLink(link))
+}
 
-		var choicesHeader string
-		var keys []string
+// ConvertCachedJSON turns a parsed cache-side JSONResponse into the
+// QuestionData slice the rest of the pipeline consumes. Compared to the
+// legacy in-loop conversion this used to do inline, it ALSO populates
+//   - QuestionData.SuggestedAnswer (full multi-letter, no truncation)
+//   - QuestionData.Extras (per-poster discussion, images, IsMC, ExamID,
+//     AnswerDescription) which the SQLite-direct writer reads.
+//
+// Legacy fields (Title, Header, Answer, Comments) keep their MD-output
+// formatting, so the existing markdown writer is unaffected.
+func ConvertCachedJSON(content models.JSONResponse, name string) []*models.QuestionData {
+	var out []*models.QuestionData
+	for _, q := range content.PageProps.Questions {
+		var sb strings.Builder
+		for _, d := range q.Discussion {
+			sb.WriteString("[")
+			sb.WriteString(d.Poster)
+			sb.WriteString("] ")
+			sb.WriteString(d.Content)
+			sb.WriteString("\n")
+		}
+		commentsFlat := utils.CleanText(sb.String())
+
+		var choicesHeader strings.Builder
+		keys := make([]string, 0, len(q.Choices))
 		for key := range q.Choices {
 			keys = append(keys, key)
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			choicesHeader += fmt.Sprintf("**%s:** %s\n\n", key, q.Choices[key])
+			choicesHeader.WriteString("**")
+			choicesHeader.WriteString(key)
+			choicesHeader.WriteString(":** ")
+			choicesHeader.WriteString(q.Choices[key])
+			choicesHeader.WriteString("\n\n")
 		}
 
-		name := utils.GetNameFromLink(link)
-		counter++
+		discussion := make([]models.DiscussionEntry, 0, len(q.Discussion))
+		for _, d := range q.Discussion {
+			discussion = append(discussion, models.DiscussionEntry{
+				Poster:      d.Poster,
+				Content:     d.Content,
+				UpvoteCount: d.UpvoteCount,
+				Timestamp:   d.Timestamp,
+			})
+		}
 
-		questions = append(questions, &models.QuestionData{
-			Title:        "Examtopics " + strings.ReplaceAll(name, ".json?ref=main", "") + " question #" + strconv.Itoa(counter),
-			Header:       q.QuestionText,
-			Content:      strings.Join(q.QuestionImages, "\n"),
-			Questions:    []string{choicesHeader},
-			Answer:       q.Answer,
-			Timestamp:    q.Timestamp,
-			QuestionLink: q.URL,
-			Comments:     utils.CleanText(comments),
+		counter++
+		out = append(out, &models.QuestionData{
+			Title:           "Examtopics " + strings.ReplaceAll(name, ".json?ref=main", "") + " question #" + strconv.Itoa(counter),
+			Header:          q.QuestionText,
+			Content:         strings.Join(q.QuestionImages, "\n"),
+			Questions:       []string{choicesHeader.String()},
+			Answer:          q.Answer,
+			SuggestedAnswer: q.Answer,
+			Timestamp:       q.Timestamp,
+			QuestionLink:    q.URL,
+			Comments:        commentsFlat,
+			Extras: &models.QuestionExtras{
+				ExamID:            q.ExamID,
+				IsMC:              q.IsMC,
+				AnswerDescription: q.AnswerDescription,
+				QuestionImages:    q.QuestionImages,
+				AnswerImages:      q.AnswerImages,
+				Discussion:        discussion,
+			},
 		})
 	}
-
-	return questions
+	return out
 }
 
 func fetchAllPageLinksConcurrently(providerName, grepStr string, numPages, concurrency int) []string {

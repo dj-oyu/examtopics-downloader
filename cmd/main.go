@@ -7,8 +7,20 @@ import (
 	"os"
 
 	"examtopics-downloader/internal/fetch"
+	"examtopics-downloader/internal/sqlite"
 	"examtopics-downloader/internal/utils"
 )
+
+// shouldEmitMarkdown decides whether we should run the legacy Markdown writer
+// path. The default is "yes" (preserves prior behavior). The only case we skip
+// MD is when the user opted into -sqlite without explicitly setting -o, which
+// would otherwise auto-clobber examtopics_output.md as a side effect.
+func shouldEmitMarkdown(sqliteSet, oExplicit bool) bool {
+	if !sqliteSet {
+		return true
+	}
+	return oExplicit
+}
 
 func main() {
 	provider := flag.String("p", "google", "Name of the exam provider (default -> google)")
@@ -20,6 +32,7 @@ func main() {
 	saveUrls := flag.Bool("save-links", false, "Optional argument to save unique links to questions")
 	noCache := flag.Bool("no-cache", false, "Optional argument, set to disable looking through cached data on github")
 	token := flag.String("t", "", "Optional argument to make cached requests faster to gh api")
+	sqlitePath := flag.String("sqlite", "", "Optional path to a SQLite DB. When set, scraped data is written directly into this DB (cache JSON preserves all fields; manual fallback writes a subset).")
 	flag.Parse()
 
 	if *examsFlag {
@@ -33,6 +46,26 @@ func main() {
 
 	if *grepStr == "" {
 		log.Printf("running without a valid string to search for with -s, (no_grep_str)!")
+	}
+
+	// Detect explicit `-o` so we know whether the user actually wants MD output
+	// or is just inheriting the default value.
+	oExplicit := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "o" {
+			oExplicit = true
+		}
+	})
+	emitMarkdown := shouldEmitMarkdown(*sqlitePath != "", oExplicit)
+
+	if *sqlitePath != "" {
+		if err := runSQLiteMode(*sqlitePath, *provider, *grepStr, *token, *noCache, *saveUrls); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if !emitMarkdown {
+			return
+		}
 	}
 
 	if !*noCache {
@@ -52,4 +85,55 @@ func main() {
 	}
 	utils.WriteData(links, *outputPath, *commentBool, *fileType)
 	fmt.Printf("Successfully saved output to %s (filetype: %s).\n", *outputPath, *fileType)
+}
+
+// runSQLiteMode opens the target DB and writes scraped data straight into it.
+// Tries the cache path first; on zero results falls back to the manual scrape.
+// Errors out (non-zero) if the combined run wrote zero questions, which is how
+// we surface the silent "0 matches" cases (bad -s grep, GitHub 1000-listing
+// cap miss without manual hits).
+func runSQLiteMode(path, provider, grep, token string, noCache, saveUrls bool) error {
+	db, err := sqlite.Open(path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer db.Close()
+
+	w := sqlite.NewWriter(db)
+	if err := w.Begin(); err != nil {
+		return err
+	}
+
+	cachedCount := 0
+	if !noCache {
+		n, err := fetch.GetCachedPagesToSQLite(provider, grep, token, w)
+		if err != nil {
+			_ = w.Rollback()
+			return fmt.Errorf("cache write: %w", err)
+		}
+		cachedCount = n
+	}
+
+	manualCount := 0
+	if cachedCount == 0 {
+		fmt.Println("Going to manual scraping, cached data failed.")
+		n, err := fetch.GetAllPagesToSQLite(provider, grep, w)
+		if err != nil {
+			_ = w.Rollback()
+			return fmt.Errorf("manual write: %w", err)
+		}
+		manualCount = n
+	}
+	_ = saveUrls // intentionally unused in SQLite mode for now
+
+	total := cachedCount + manualCount
+	if total == 0 {
+		_ = w.Rollback()
+		return fmt.Errorf("no questions matched %q for provider %q (check -s spelling; GitHub cache caps directory listing at 1000 entries — exams alphabetically after 'AWS-Certified-SAP-on-AWS' miss the cache)", grep, provider)
+	}
+	if err := w.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	fmt.Printf("Successfully saved %d questions to %s (cache=%d, manual=%d).\n", total, path, cachedCount, manualCount)
+	return nil
 }
