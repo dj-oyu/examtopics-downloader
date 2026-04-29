@@ -50,3 +50,6 @@ GEMINI.md
 
 # transient tooling work
 /tools/_work/
+
+# runtime agent invocation logs (web/src/agent.ts → logs/agent.jsonl)
+/logs/
