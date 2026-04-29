@@ -23,6 +23,12 @@ func shouldEmitMarkdown(sqliteSet, oExplicit bool) bool {
 }
 
 func main() {
+	// Best-effort load of ./.env so a committed PAT in $GH_PAT is picked up
+	// without the user having to `source` it. Existing env vars win.
+	if err := utils.LoadDotEnv(".env"); err != nil {
+		log.Printf("warning: failed to read .env: %v", err)
+	}
+
 	provider := flag.String("p", "google", "Name of the exam provider (default -> google)")
 	grepStr := flag.String("s", "", "String to grep for in discussion links")
 	outputPath := flag.String("o", "examtopics_output.md", "Optional path of the file where the data will be outputted")
@@ -31,9 +37,16 @@ func main() {
 	examsFlag := flag.Bool("exams", false, "Optionally show all the possible exams for your selected provider and exit")
 	saveUrls := flag.Bool("save-links", false, "Optional argument to save unique links to questions")
 	noCache := flag.Bool("no-cache", false, "Optional argument, set to disable looking through cached data on github")
-	token := flag.String("t", "", "Optional argument to make cached requests faster to gh api")
+	token := flag.String("t", "", "GitHub PAT for cached scrape (env GH_PAT used when flag is empty)")
 	sqlitePath := flag.String("sqlite", "", "Optional path to a SQLite DB. When set, scraped data is written directly into this DB (cache JSON preserves all fields; manual fallback writes a subset).")
 	flag.Parse()
+
+	// Fall back to GH_PAT (possibly loaded from .env) when -t is empty.
+	if *token == "" {
+		if envTok := os.Getenv("GH_PAT"); envTok != "" {
+			*token = envTok
+		}
+	}
 
 	if *examsFlag {
 		exams := fetch.GetProviderExams(*provider)

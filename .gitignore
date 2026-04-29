@@ -34,6 +34,10 @@ GEMINI.md
 .gemini/skills/*
 !.gemini/skills/exam-translator.md
 
+# === secrets: ignore all .env* variants, allow only the schema example ===
+.env*
+!.env.example
+
 # === local workflow intermediates (one-shot scripts and JSON payloads) ===
 # JSON at repo root is treated as scraped/translation data (legal risk)
 /*.json
