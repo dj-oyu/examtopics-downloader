@@ -1,9 +1,10 @@
 import { Database } from "bun:sqlite";
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { resolve, basename, sep } from "node:path";
 
 const PROJECT_ROOT = resolve(import.meta.dir, "../..");
 const PROJECT_ROOT_PREFIX = PROJECT_ROOT.endsWith(sep) ? PROJECT_ROOT : PROJECT_ROOT + sep;
+const MIGRATIONS_DIR = resolve(PROJECT_ROOT, "migrations");
 const SLUG_RE = /^[A-Za-z0-9._-]+$/;
 
 const SCHEMA = `
@@ -32,6 +33,12 @@ const SCHEMA = `
     role TEXT NOT NULL CHECK (role IN ('user','agent')),
     author TEXT,
     content TEXT NOT NULL,
+    reason_code TEXT CHECK (
+      reason_code IS NULL OR
+      reason_code IN ('comprehension','spec','ambiguous','translation')
+    ),
+    citations TEXT,
+    translation_diff TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE INDEX IF NOT EXISTS idx_msg_thread ON explanation_messages(thread_id);
@@ -53,6 +60,57 @@ const SCHEMA = `
 `;
 
 const cache = new Map<string, Database>();
+
+const SCHEMA_VERSION_DDL = `
+  CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+function applyPendingMigrations(db: Database): void {
+  db.exec(SCHEMA_VERSION_DDL);
+  const applied = new Set(
+    db
+      .query<{ version: number }, []>("SELECT version FROM schema_version")
+      .all()
+      .map((r) => r.version)
+  );
+  let entries: string[];
+  try {
+    entries = readdirSync(MIGRATIONS_DIR);
+  } catch {
+    return;
+  }
+  const files = entries
+    .filter((f) => /^\d+_.*\.sql$/.test(f))
+    .sort((a, b) => a.localeCompare(b));
+  for (const f of files) {
+    const m = f.match(/^(\d+)_(.*)\.sql$/);
+    if (!m) continue;
+    const version = parseInt(m[1], 10);
+    if (applied.has(version)) continue;
+    const sql = readFileSync(resolve(MIGRATIONS_DIR, f), "utf-8");
+    db.exec("PRAGMA foreign_keys = OFF");
+    try {
+      db.exec("BEGIN");
+      db.exec(sql);
+      db.run("INSERT INTO schema_version(version, name) VALUES (?, ?)", [
+        version,
+        f.replace(/\.sql$/, ""),
+      ]);
+      db.exec("COMMIT");
+    } catch (e) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {}
+      db.exec("PRAGMA foreign_keys = ON");
+      throw e;
+    }
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+}
 
 export class InvalidSlugError extends Error {}
 
@@ -98,6 +156,7 @@ export function openDb(slug: string): Database {
   }
   d = new Database(path);
   d.exec(SCHEMA);
+  applyPendingMigrations(d);
   cache.set(slug, d);
   return d;
 }
@@ -310,12 +369,36 @@ export type Thread = {
   closed_at: string | null;
 };
 
+export type ReasonCode =
+  | "comprehension"
+  | "spec"
+  | "ambiguous"
+  | "translation";
+
+export type Citation = { url: string; title?: string };
+
+export type TranslationDiff = {
+  before: {
+    question_text_ja?: string | null;
+    explanation_ja?: string | null;
+    choices_ja?: Record<string, string | null>;
+  };
+  after: {
+    question_text_ja?: string;
+    explanation_ja?: string;
+    choices_ja?: Record<string, string>;
+  };
+};
+
 export type Message = {
   id: number;
   thread_id: number;
   role: "user" | "agent";
   author: string | null;
   content: string;
+  reason_code: ReasonCode | null;
+  citations: string | null;
+  translation_diff: string | null;
   created_at: string;
 };
 
