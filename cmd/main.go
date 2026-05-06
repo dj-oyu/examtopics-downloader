@@ -27,6 +27,17 @@ func shouldEmitMarkdown(sqliteSet, oExplicit bool) bool {
 }
 
 func main() {
+	// Subcommand dispatch — see cmd/dispatch.go. The shim sits ahead of
+	// upstream's main() body so new subcommand handling does not
+	// interleave with the legacy flag-style scrape logic. This is the
+	// ONLY structural change to upstream's main(); future upstream
+	// patches to the body below apply cleanly because the shim is at a
+	// boundary they never touch.
+	if exit, ok := dispatchSubcommand(os.Args[1:]); ok {
+		os.Exit(exit)
+	}
+
+	// ----- legacy upstream main() body below -----
 	// Best-effort load of ./.env so a committed PAT in $GH_PAT is picked up
 	// without the user having to `source` it. Existing env vars win.
 	if err := utils.LoadDotEnv(".env"); err != nil {
