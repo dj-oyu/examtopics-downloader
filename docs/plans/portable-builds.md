@@ -510,7 +510,7 @@ CREATE INDEX idx_msg_thread ON explanation_messages(thread_id);
 ```
 
 実装影響:
-- Go 側: `github.com/gofrs/uuid` v5 で UUIDv7 生成 (`uuid.NewV7()`)。`internal/uuidx` パッケージに encode/decode (BLOB ⇄ Crockford base32) を集約
+- Go 側: `github.com/google/uuid` v1.6+ で UUIDv7 生成 (`uuid.NewV7()`)。**既に indirect dep として `go.mod` に存在**するため新規依存追加なしで済む。`internal/uuidx` パッケージに encode/decode (BLOB ⇄ Crockford base32) を集約
 - Bun 側: `Bun.randomUUIDv7()` (Bun 1.2+) で生成。ない環境用に `crypto.randomUUID()` ベースの fallback も用意 (時間ビットを epoch ms で上書き)
 - `web/src/db.ts` の `Number(r.lastInsertRowid)` 経路 (`createThread`, `appendMessage`) を **「INSERT 前に UUIDv7 を生成して明示渡し」** に書き換え (4-5 箇所)
 - URL ルート: `/threads/:id` の `id` を 26 文字 base32 として受け取る regex に変更 (`/^[0-9A-HJKMNP-TV-Z]{26}$/i`)
@@ -805,7 +805,7 @@ jobs:
    - `cmd/main.go` に `var version = "dev"` を追加
    - `internal/config` パッケージ新設 (§3.5 の `Config` / `Load()`)。`hostId` フィールドを必須化 (§3.7.3)、未設定時は `os.Hostname()` + ランダム 4 文字 suffix を生成して書き戻し
    - `internal/utils/dotenv.go` に `LoadDotEnvAuto()` を追加 (config.json と同じ探索順)
-   - `internal/uuidx` パッケージ新設 (§3.7.2): UUIDv7 生成 (`gofrs/uuid` v5)、BLOB(16) ⇄ Crockford base32 26 文字の encode/decode、ラウンドトリップ property test
+   - `internal/uuidx` パッケージ新設 (§3.7.2): UUIDv7 生成 (`github.com/google/uuid` v1.6+ — 既存 indirect dep を昇格)、BLOB(16) ⇄ Crockford base32 26 文字の encode/decode、ラウンドトリップ property test
    - 進捗バー / log 出力を非 TTY で扱いやすい形に整える
    - `golangci-lint` の `.golangci.yml` 最小設定 (default linters + `errcheck`, `staticcheck`, `govet`)
 3. **Go CLI のサブコマンド化** (§3.6 / §3.7.4):
@@ -900,7 +900,7 @@ jobs:
 - [ ] **`go generate` 後 `skills/exam-translator.md` を真とし、`.gemini/skills/` と `internal/skills/assets/` が byte 一致 (CI ガード)**
 - [ ] **`-client gemini` / `-client claude` / `-client codex` のいずれでも translate が起動し、各クライアントの skill 配置レイアウトに展開されることを確認**
 - [ ] **旧フラグ構文 `examtopicsdl -p amazon -s ...` が `fetch` サブコマンドへ後方互換 dispatch される**
-- [ ] **migration 003 適用後の DB で UUIDv7 BLOB(16) PK が機能し、`Bun.randomUUIDv7()` / `gofrs/uuid` v5 で生成した ID が両言語で互換 (Go で書いた行を Bun で読める / 逆も)**
+- [ ] **migration 003 適用後の DB で UUIDv7 BLOB(16) PK が機能し、`Bun.randomUUIDv7()` / `google/uuid` v1.6+ で生成した ID が両言語で互換 (Go で書いた行を Bun で読める / 逆も)**
 - [ ] **`internal/uuidx` のラウンドトリップ property test が Go/Bun の双方で通る (`encode(decode(x)) == x` を 10000 ランダム値)**
 - [ ] **`/threads/:id` URL に 26 文字 Crockford base32 を渡してアクセスできる (整数 ID へのフォールバックは無し)**
 - [ ] **`examtopicsdl sync snapshot` が `VACUUM INTO` で一貫したスナップショットを出力する**
