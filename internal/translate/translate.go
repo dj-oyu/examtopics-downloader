@@ -20,8 +20,15 @@ import (
 
 // SkillMarkdown is the raw markdown content of the exam-translator skill,
 // embedded at build time from internal/translate/assets/exam-translator.md.
-// That asset is the canonical source — every client-specific copy is
-// regenerated from it via Materialize.
+//
+// The canonical source of truth lives at <repo>/skills/exam-translator.md;
+// the asset file beside this package and .gemini/skills/exam-translator/
+// SKILL.md are both regenerated from it via `go generate ./...`. CI runs
+// the generator and `git diff --exit-code` to refuse drift in either
+// direction. Edit skills/exam-translator.md, then `go generate` to
+// propagate.
+//
+//go:generate go run ../../tools/skillsync
 //
 //go:embed assets/exam-translator.md
 var SkillMarkdown string

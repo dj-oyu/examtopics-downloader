@@ -59,6 +59,18 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
+      - name: skill sync drift
+        # tools/skillsync is wired into //go:generate in
+        # internal/translate/translate.go. Running it should be a no-op
+        # against committed copies; any diff means a destination file
+        # was edited directly. CI fails the PR so the contributor can
+        # update the canonical skills/ or agents/ master instead.
+        run: |
+          go generate ./...
+          if ! git diff --exit-code; then
+            echo "::error::skill sync drift — edit skills/exam-translator.md or agents/exam-translator-worker.md, then run \`go generate ./...\`"
+            exit 1
+          fi
       - name: tests
         run: go test -race -count=1 ./...
 
