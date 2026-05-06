@@ -37,10 +37,40 @@ type Config struct {
 		DefaultProvider string `json:"defaultProvider"`
 		NoCache         bool   `json:"noCache"`
 	} `json:"scrape"`
+	Tools struct {
+		Translate TranslateSection `json:"translate"`
+	} `json:"tools"`
 
 	// LoadedFrom is the absolute path of the JSON file that contributed
 	// values, or "" if no config.json was found and defaults are in use.
 	LoadedFrom string `json:"-"`
+}
+
+// TranslateSection drives `examtopicsdl translate retranslate / explain`
+// adapter selection without recompile or per-call flags. Empty fields
+// fall back to the CLI's hard-coded defaults (see ClientOrDefault) so
+// users can opt in incrementally.
+type TranslateSection struct {
+	// Client is the LLM CLI to spawn ("claude" | "gemini" | "codex" |
+	// "exec"). Empty defers to the binary's flag default.
+	Client string `json:"client"`
+	// Model is passed to the chosen client as its native model flag
+	// (e.g. claude --model). Empty leaves the client's own default.
+	Model string `json:"model"`
+	// Bin overrides the path to the chosen client's executable.
+	// Empty falls through to the per-client env (CLAUDE_BIN, etc.)
+	// and finally PATH lookup.
+	Bin string `json:"bin"`
+}
+
+// ClientOrDefault returns the configured client or the binary-wide
+// default ("claude") so flag-default and adapter dispatch see one
+// canonical answer.
+func (t TranslateSection) ClientOrDefault() string {
+	if t.Client == "" {
+		return "claude"
+	}
+	return t.Client
 }
 
 // forbiddenKeys must never appear in config.json. They are inspected at
@@ -199,6 +229,15 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if v := os.Getenv("EXAMTOPICS_DOWNLOADER_BIN"); v != "" {
 		c.DownloaderBin = v
+	}
+	if v := os.Getenv("EXAMTOPICS_TRANSLATE_CLIENT"); v != "" {
+		c.Tools.Translate.Client = v
+	}
+	if v := os.Getenv("EXAMTOPICS_TRANSLATE_MODEL"); v != "" {
+		c.Tools.Translate.Model = v
+	}
+	if v := os.Getenv("EXAMTOPICS_TRANSLATE_BIN"); v != "" {
+		c.Tools.Translate.Bin = v
 	}
 }
 

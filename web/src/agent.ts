@@ -24,7 +24,21 @@ const SPAWN_CWD = process.cwd();
 // that places the binary next to the web server still works with a
 // relative hint.
 const EXAMTOPICSDL_BIN = process.env.EXAMTOPICSDL_BIN ?? "examtopicsdl";
-const TRANSLATE_CLIENT = process.env.EXAMTOPICS_TRANSLATE_CLIENT ?? "claude";
+
+// translateOverrideArgs lets the web side bolt -client / -model onto the
+// spawned `examtopicsdl translate ...` invocation when an env var pins
+// the choice; otherwise the Go binary falls back to its own resolution
+// (config.json's tools.translate.{client,model} → built-in defaults).
+// Keeping this as overrides — rather than hard-coding "claude" — means
+// edits to config.json take effect without a web restart.
+function translateOverrideArgs(): string[] {
+  const out: string[] = [];
+  const c = process.env.EXAMTOPICS_TRANSLATE_CLIENT;
+  if (c) out.push("-client", c);
+  const m = process.env.EXAMTOPICS_TRANSLATE_MODEL;
+  if (m) out.push("-model", m);
+  return out;
+}
 
 type ExplainJob = { kind: "explain"; slug: string; tid: string };
 type RetransJob = { kind: "retranslate"; slug: string; qid: number };
@@ -449,8 +463,7 @@ async function runExplain(slug: string, tid: string): Promise<void> {
     dbPath,
     "-tid",
     tid,
-    "-client",
-    TRANSLATE_CLIENT,
+    ...translateOverrideArgs(),
   ];
   logEvent("spawn_initial", {
     slug,
@@ -469,7 +482,6 @@ async function runExplain(slug: string, tid: string): Promise<void> {
     tid,
     kind: "explain",
     bin: EXAMTOPICSDL_BIN,
-    client: TRANSLATE_CLIENT,
     exit_code: result.exitCode,
     stdout: summarize(result.stdout),
     stderr: summarize(result.stderr),
@@ -485,8 +497,9 @@ async function runRetranslate(slug: string, qid: number): Promise<void> {
   // Web no longer spawns the LLM directly. examtopicsdl owns the
   // read row → adapter spawn → write back loop, so the JSON contract
   // is enforced by Go tests and we don't need to babysit prompt
-  // engineering from the web side. The chosen adapter is fed to the
-  // CLI via -client; default mirrors the historical Claude path.
+  // engineering from the web side. The chosen client + model come
+  // from config.json's tools.translate; env overrides only thread
+  // through when explicitly set (see translateOverrideArgs).
   const dbPath = join(loadConfig().dataDir, `${slug}.db`);
   const args = [
     "translate",
@@ -495,8 +508,7 @@ async function runRetranslate(slug: string, qid: number): Promise<void> {
     dbPath,
     "-qid",
     String(qid),
-    "-client",
-    TRANSLATE_CLIENT,
+    ...translateOverrideArgs(),
   ];
   logEvent("spawn_initial", {
     slug,
@@ -515,7 +527,6 @@ async function runRetranslate(slug: string, qid: number): Promise<void> {
     qid,
     kind: "retranslate",
     bin: EXAMTOPICSDL_BIN,
-    client: TRANSLATE_CLIENT,
     exit_code: result.exitCode,
     stdout: summarize(result.stdout),
     stderr: summarize(result.stderr),

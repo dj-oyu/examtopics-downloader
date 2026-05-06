@@ -58,6 +58,13 @@ Two layered files, never one. Structural settings live in JSON, secrets stay in 
   "scrape": {
     "defaultProvider": "amazon",
     "noCache": false
+  },
+  "tools": {
+    "translate": {
+      "client": "claude",            // claude | gemini | codex | exec — drives `examtopicsdl translate retranslate / explain` adapter
+      "model": "claude-sonnet-4-6",  // optional --model override; empty leaves the client's own default
+      "bin": ""                      // optional path to the client binary; empty falls back to CLAUDE_BIN / PATH
+    }
   }
 }
 ```
@@ -76,7 +83,7 @@ ANTHROPIC_API_KEY=sk-ant-xxx     # only if you use the explain / claude adapter
 4. Per-user — Linux/macOS `$XDG_CONFIG_HOME/examtopics/config.json` (default `~/.config/examtopics/config.json`); Windows `%APPDATA%\examtopics\config.json`
 5. Built-in defaults (`dataDir = cwd`, port 8787, etc.)
 
-`.env` resolution mirrors the same locations. Process environment variables (`EXAMTOPICS_DATA_DIR`, `EXAMTOPICS_LOG_DIR`, `EXAMTOPICS_HOST_ID`, `EXAMTOPICS_DOWNLOADER_BIN`, `GH_PAT`, …) override the JSON values.
+`.env` resolution mirrors the same locations. Process environment variables (`EXAMTOPICS_DATA_DIR`, `EXAMTOPICS_LOG_DIR`, `EXAMTOPICS_HOST_ID`, `EXAMTOPICS_DOWNLOADER_BIN`, `EXAMTOPICS_TRANSLATE_CLIENT`, `EXAMTOPICS_TRANSLATE_MODEL`, `EXAMTOPICS_TRANSLATE_BIN`, `GH_PAT`, …) override the JSON values.
 
 ### Forbidden keys
 

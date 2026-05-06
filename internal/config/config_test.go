@@ -23,6 +23,9 @@ func withIsolatedHome(t *testing.T) string {
 	t.Setenv("EXAMTOPICS_LOG_DIR", "")
 	t.Setenv("EXAMTOPICS_DOWNLOADER_BIN", "")
 	t.Setenv("EXAMTOPICS_HOST_ID", "")
+	t.Setenv("EXAMTOPICS_TRANSLATE_CLIENT", "")
+	t.Setenv("EXAMTOPICS_TRANSLATE_MODEL", "")
+	t.Setenv("EXAMTOPICS_TRANSLATE_BIN", "")
 	// Force cwd into the temp dir so Load doesn't accidentally pick up the
 	// repo's own files when run from `go test ./...`.
 	prev, _ := os.Getwd()
@@ -226,6 +229,79 @@ func TestLoad_HostIDFormat(t *testing.T) {
 		if !isHex {
 			t.Errorf("non-hex char %q in suffix %q", r, suffix)
 		}
+	}
+}
+
+func TestTranslate_DefaultsAreEmpty(t *testing.T) {
+	withIsolatedHome(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Tools.Translate.Client != "" {
+		t.Errorf("default Translate.Client = %q, want empty", cfg.Tools.Translate.Client)
+	}
+	if cfg.Tools.Translate.Model != "" || cfg.Tools.Translate.Bin != "" {
+		t.Errorf("default Translate.{Model,Bin} should be empty: %+v", cfg.Tools.Translate)
+	}
+	if got := cfg.Tools.Translate.ClientOrDefault(); got != "claude" {
+		t.Errorf("ClientOrDefault on empty = %q, want claude", got)
+	}
+}
+
+func TestTranslate_JSONPopulatesSection(t *testing.T) {
+	dir := withIsolatedHome(t)
+	cfgPath := filepath.Join(dir, "myconfig.json")
+	if err := os.WriteFile(cfgPath, []byte(`{
+		"tools": {
+			"translate": {
+				"client": "gemini",
+				"model": "gemini-3.1-flash-lite-preview",
+				"bin": "/usr/local/bin/gemini"
+			}
+		}
+	}`), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	t.Setenv("EXAMTOPICS_CONFIG", cfgPath)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Tools.Translate.Client != "gemini" {
+		t.Errorf("Client = %q, want gemini", cfg.Tools.Translate.Client)
+	}
+	if cfg.Tools.Translate.Model != "gemini-3.1-flash-lite-preview" {
+		t.Errorf("Model = %q", cfg.Tools.Translate.Model)
+	}
+	if cfg.Tools.Translate.Bin != "/usr/local/bin/gemini" {
+		t.Errorf("Bin = %q", cfg.Tools.Translate.Bin)
+	}
+	if got := cfg.Tools.Translate.ClientOrDefault(); got != "gemini" {
+		t.Errorf("ClientOrDefault when set = %q, want gemini", got)
+	}
+}
+
+func TestTranslate_EnvOverridesJSON(t *testing.T) {
+	dir := withIsolatedHome(t)
+	cfgPath := filepath.Join(dir, "myconfig.json")
+	if err := os.WriteFile(cfgPath, []byte(`{
+		"tools": { "translate": { "client": "gemini", "model": "g-1" } }
+	}`), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	t.Setenv("EXAMTOPICS_CONFIG", cfgPath)
+	t.Setenv("EXAMTOPICS_TRANSLATE_CLIENT", "claude")
+	t.Setenv("EXAMTOPICS_TRANSLATE_MODEL", "claude-opus-4-7")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Tools.Translate.Client != "claude" {
+		t.Errorf("env override Client = %q, want claude", cfg.Tools.Translate.Client)
+	}
+	if cfg.Tools.Translate.Model != "claude-opus-4-7" {
+		t.Errorf("env override Model = %q", cfg.Tools.Translate.Model)
 	}
 }
 

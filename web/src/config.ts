@@ -24,6 +24,22 @@ export type ScrapeSection = {
   noCache: boolean;
 };
 
+// TranslateSection mirrors internal/config (Go) — drives which LLM CLI
+// the spawned `examtopicsdl translate` invocation talks to and (when
+// non-empty) the model flag passed through. Web doesn't make the
+// dispatch decision itself; the Go binary reads its own config.json.
+// The mirror exists so future TS code that wants to display "active
+// client" / "active model" gets typed access without re-parsing.
+export type TranslateSection = {
+  client: string;
+  model: string;
+  bin: string;
+};
+
+export type ToolsSection = {
+  translate: TranslateSection;
+};
+
 export type Config = {
   hostId: string;
   dataDir: string;
@@ -31,6 +47,7 @@ export type Config = {
   downloaderBin: string;
   web: WebSection;
   scrape: ScrapeSection;
+  tools: ToolsSection;
   loadedFrom: string;
 };
 
@@ -53,6 +70,7 @@ function defaults(): Config {
     downloaderBin: "",
     web: { host: "127.0.0.1", port: 8787, adminEnabled: true },
     scrape: { defaultProvider: "amazon", noCache: false },
+    tools: { translate: { client: "", model: "", bin: "" } },
     loadedFrom: "",
   };
 }
@@ -103,6 +121,9 @@ function applyEnvOverrides(cfg: Config): void {
   if (process.env.EXAMTOPICS_DATA_DIR) cfg.dataDir = process.env.EXAMTOPICS_DATA_DIR;
   if (process.env.EXAMTOPICS_LOG_DIR) cfg.logDir = process.env.EXAMTOPICS_LOG_DIR;
   if (process.env.EXAMTOPICS_DOWNLOADER_BIN) cfg.downloaderBin = process.env.EXAMTOPICS_DOWNLOADER_BIN;
+  if (process.env.EXAMTOPICS_TRANSLATE_CLIENT) cfg.tools.translate.client = process.env.EXAMTOPICS_TRANSLATE_CLIENT;
+  if (process.env.EXAMTOPICS_TRANSLATE_MODEL) cfg.tools.translate.model = process.env.EXAMTOPICS_TRANSLATE_MODEL;
+  if (process.env.EXAMTOPICS_TRANSLATE_BIN) cfg.tools.translate.bin = process.env.EXAMTOPICS_TRANSLATE_BIN;
 }
 
 function expandPath(s: string): string {

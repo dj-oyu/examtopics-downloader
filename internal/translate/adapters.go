@@ -68,8 +68,11 @@ func buildPrompt(opts RunOpts) string {
 // --allowed-tools Read,Write` so the model can pull in the staged
 // input file and write the result back. The binary path can be
 // overridden via the CLAUDE_BIN env var (matches web/src/agent.ts).
+// Model, when non-empty, is passed through as `--model <model>` so
+// the same adapter handles claude-sonnet / claude-opus / etc.
 type ClaudeAdapter struct {
-	Bin string
+	Bin   string
+	Model string
 }
 
 func (a *ClaudeAdapter) Name() string { return "claude" }
@@ -79,11 +82,15 @@ func (a *ClaudeAdapter) Run(ctx context.Context, opts RunOpts) error {
 	if bin == "" {
 		bin = "claude"
 	}
-	cmd := exec.CommandContext(ctx, bin,
+	args := []string{
 		"-p", buildPrompt(opts),
 		"--output-format", "json",
 		"--allowed-tools", "Read,Write",
-	)
+	}
+	if a.Model != "" {
+		args = append(args, "--model", a.Model)
+	}
+	cmd := exec.CommandContext(ctx, bin, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("claude exec: %w (stdout/stderr: %s)", err, truncate(string(out), 1000))
@@ -137,14 +144,35 @@ func (a *ExecAdapter) Run(ctx context.Context, opts RunOpts) error {
 	return nil
 }
 
+// AdapterOpts threads config-derived knobs (model, binary override)
+// into AdapterFor / ExplainAdapterFor without forcing every test that
+// just wants a default adapter to construct an opts struct. Callers
+// pass zero or one AdapterOpts; extras are ignored.
+type AdapterOpts struct {
+	Model string // passed as --model when the client supports it
+	Bin   string // overrides CLAUDE_BIN / equivalent client default
+}
+
 // AdapterFor returns the Adapter that pairs with the named client.
 // Caller should treat ok=false as "unknown client name"; the four
 // names mirror KnownClients() so -list-clients output and -client
 // flag values stay aligned.
-func AdapterFor(name string) (Adapter, bool) {
+//
+// AdapterOpts is variadic so existing test call sites (`AdapterFor("claude")`)
+// keep compiling. Production CLI / Web paths pass an opts populated
+// from config.Tools.Translate.
+func AdapterFor(name string, opts ...AdapterOpts) (Adapter, bool) {
+	var o AdapterOpts
+	if len(opts) > 0 {
+		o = opts[0]
+	}
 	switch name {
 	case "claude":
-		return &ClaudeAdapter{Bin: os.Getenv("CLAUDE_BIN")}, true
+		bin := o.Bin
+		if bin == "" {
+			bin = os.Getenv("CLAUDE_BIN")
+		}
+		return &ClaudeAdapter{Bin: bin, Model: o.Model}, true
 	case "gemini":
 		return &GeminiAdapter{}, true
 	case "codex":
@@ -265,9 +293,12 @@ func extractClaudeSessionID(stdout string) string {
 // session_id is extracted and surfaced back to the orchestrator so the
 // next turn can resume on the same conversation.
 //
-// Bin defaults to "claude" (mirrors CLAUDE_BIN env in web/src/agent.ts).
+// Bin defaults to "claude" (mirrors CLAUDE_BIN env in web/src/agent.ts);
+// Model, when non-empty, is passed through as `--model <model>` so
+// the same adapter handles claude-sonnet / claude-opus / etc.
 type ClaudeExplainAdapter struct {
-	Bin string
+	Bin   string
+	Model string
 }
 
 func (a *ClaudeExplainAdapter) Name() string { return "claude" }
@@ -286,6 +317,9 @@ func (a *ClaudeExplainAdapter) RunExplain(ctx context.Context, opts ExplainRunOp
 		"--output-format", "json",
 		"--allowed-tools", explainAllowedTools,
 	)
+	if a.Model != "" {
+		args = append(args, "--model", a.Model)
+	}
 	cmd := exec.CommandContext(ctx, bin, args...)
 	out, err := cmd.Output()
 	if err != nil {
@@ -329,10 +363,23 @@ func (a *ExecExplainAdapter) RunExplain(_ context.Context, _ ExplainRunOpts) (Ex
 // "not yet wired" error from RunExplain so misconfigured `-client`
 // fails fast at runtime rather than silently producing an empty
 // reply.
-func ExplainAdapterFor(name string) (ExplainAdapter, bool) {
+//
+// AdapterOpts is variadic to keep existing test call sites working
+// without an explicit empty struct. Production callers pass an opts
+// populated from config.Tools.Translate so model + bin overrides
+// propagate uniformly.
+func ExplainAdapterFor(name string, opts ...AdapterOpts) (ExplainAdapter, bool) {
+	var o AdapterOpts
+	if len(opts) > 0 {
+		o = opts[0]
+	}
 	switch name {
 	case "claude":
-		return &ClaudeExplainAdapter{Bin: os.Getenv("CLAUDE_BIN")}, true
+		bin := o.Bin
+		if bin == "" {
+			bin = os.Getenv("CLAUDE_BIN")
+		}
+		return &ClaudeExplainAdapter{Bin: bin, Model: o.Model}, true
 	case "gemini":
 		return &GeminiExplainAdapter{}, true
 	case "codex":

@@ -72,18 +72,29 @@ func runTranslateMaterialize(out io.Writer, args []string) int {
 }
 
 // runRetranslateTo handles `examtopicsdl translate retranslate -db
-// <path> -qid <id> -client <name>`. The client must be one of the
-// adapters AdapterFor knows about; today only -client claude wires
-// through to a real CLI, but the others (-client gemini / codex /
-// exec) parse and dispatch so end-to-end smoke tests catch a missing
-// adapter immediately.
+// <path> -qid <id> [-client <name>] [-model <model>]`. The client
+// must be one of the adapters AdapterFor knows about; today only
+// -client claude wires through to a real CLI, but the others
+// (-client gemini / codex / exec) parse and dispatch so end-to-end
+// smoke tests catch a missing adapter immediately.
+//
+// Both -client and -model default to the values in config.json's
+// tools.translate section so users don't have to retype them on every
+// invocation. Explicit flags still win over config when present.
 func runRetranslateTo(out io.Writer, args []string) int {
 	w := utils.NewWriteErr(out)
+	cfg, err := config.Load()
+	if err != nil {
+		w.Printf("translate retranslate: load config: %v\n", err)
+		return 1
+	}
+
 	fs := flag.NewFlagSet("translate retranslate", flag.ContinueOnError)
 	fs.SetOutput(out)
 	dbPath := fs.String("db", "", "Path to the SQLite DB (required)")
 	qid := fs.Int("qid", 0, "Question id to retranslate (required)")
-	clientName := fs.String("client", "claude", "LLM CLI client (claude | gemini | codex | exec)")
+	clientName := fs.String("client", cfg.Tools.Translate.ClientOrDefault(), "LLM CLI client (claude | gemini | codex | exec). Defaults to tools.translate.client from config.json.")
+	modelFlag := fs.String("model", cfg.Tools.Translate.Model, "Model identifier passed to the client (e.g. claude-sonnet-4-6). Defaults to tools.translate.model from config.json; empty leaves the client default.")
 	dryRun := fs.Bool("dry-run", false, "Stage the input.json and stop without invoking the client")
 	workDir := fs.String("workdir", "", "Optional staging directory (input.json / output.json live here). Default: per-call temp dir.")
 	if err := fs.Parse(args); err != nil {
@@ -94,11 +105,6 @@ func runRetranslateTo(out io.Writer, args []string) int {
 		return 2
 	}
 
-	cfg, err := config.Load()
-	if err != nil {
-		w.Printf("translate retranslate: load config: %v\n", err)
-		return 1
-	}
 	db, err := sqlite.OpenWith(*dbPath, sqlite.OpenOpts{HostID: cfg.HostID, Backup: true})
 	if err != nil {
 		w.Printf("translate retranslate: open %s: %v\n", *dbPath, err)
@@ -106,7 +112,10 @@ func runRetranslateTo(out io.Writer, args []string) int {
 	}
 	defer func() { _ = db.Close() }()
 
-	adapter, ok := translate.AdapterFor(*clientName)
+	adapter, ok := translate.AdapterFor(*clientName, translate.AdapterOpts{
+		Model: *modelFlag,
+		Bin:   cfg.Tools.Translate.Bin,
+	})
 	if !ok {
 		w.Printf("translate retranslate: unknown client %q (claude | gemini | codex | exec)\n", *clientName)
 		return 2
@@ -133,18 +142,29 @@ func runRetranslateTo(out io.Writer, args []string) int {
 }
 
 // runExplainSubTo handles `examtopicsdl translate explain -db <path>
-// -tid <26-char-base32> -client <name>`. It mirrors the retranslate
-// sub-subcommand layout: the Go binary owns the read-thread → spawn
-// adapter → validate → write-reply loop, freeing web/src/agent.ts to
-// just `Bun.spawn` the binary instead of also embedding the LLM
-// prompt and the JSON validation rules.
+// -tid <26-char-base32> [-client <name>] [-model <model>]`. It mirrors
+// the retranslate sub-subcommand layout: the Go binary owns the
+// read-thread → spawn adapter → validate → write-reply loop, freeing
+// web/src/agent.ts to just `Bun.spawn` the binary instead of also
+// embedding the LLM prompt and the JSON validation rules.
+//
+// Both -client and -model default to the values in config.json's
+// tools.translate section so users don't have to retype them on every
+// invocation. Explicit flags still win over config when present.
 func runExplainSubTo(out io.Writer, args []string) int {
 	w := utils.NewWriteErr(out)
+	cfg, err := config.Load()
+	if err != nil {
+		w.Printf("translate explain: load config: %v\n", err)
+		return 1
+	}
+
 	fs := flag.NewFlagSet("translate explain", flag.ContinueOnError)
 	fs.SetOutput(out)
 	dbPath := fs.String("db", "", "Path to the SQLite DB (required)")
 	tid := fs.String("tid", "", "Thread id as 26-char Crockford base32 (required)")
-	clientName := fs.String("client", "claude", "LLM CLI client (claude | gemini | codex | exec)")
+	clientName := fs.String("client", cfg.Tools.Translate.ClientOrDefault(), "LLM CLI client (claude | gemini | codex | exec). Defaults to tools.translate.client from config.json.")
+	modelFlag := fs.String("model", cfg.Tools.Translate.Model, "Model identifier passed to the client (e.g. claude-sonnet-4-6). Defaults to tools.translate.model from config.json; empty leaves the client default.")
 	dryRun := fs.Bool("dry-run", false, "Stage the input.json and stop without invoking the client")
 	workDir := fs.String("workdir", "", "Optional staging directory (input.json / output.json live here). Default: per-call temp dir.")
 	if err := fs.Parse(args); err != nil {
@@ -155,11 +175,6 @@ func runExplainSubTo(out io.Writer, args []string) int {
 		return 2
 	}
 
-	cfg, err := config.Load()
-	if err != nil {
-		w.Printf("translate explain: load config: %v\n", err)
-		return 1
-	}
 	db, err := sqlite.OpenWith(*dbPath, sqlite.OpenOpts{HostID: cfg.HostID, Backup: true})
 	if err != nil {
 		w.Printf("translate explain: open %s: %v\n", *dbPath, err)
@@ -167,7 +182,10 @@ func runExplainSubTo(out io.Writer, args []string) int {
 	}
 	defer func() { _ = db.Close() }()
 
-	adapter, ok := translate.ExplainAdapterFor(*clientName)
+	adapter, ok := translate.ExplainAdapterFor(*clientName, translate.AdapterOpts{
+		Model: *modelFlag,
+		Bin:   cfg.Tools.Translate.Bin,
+	})
 	if !ok {
 		w.Printf("translate explain: unknown client %q (claude | gemini | codex | exec)\n", *clientName)
 		return 2
