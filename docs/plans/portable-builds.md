@@ -1,8 +1,30 @@
 # Portable Multi-Platform Builds (Plan)
 
-Status: **実装中** — タスク 2 (Go hardening) 完了 / タスク 3 (CLI subcommand 化) 完了 / タスク 4 (Web hardening) 部分完了 (4-A / 4-B / 4-C 済、4-D / 4-E / 4-F / 4-H 残)
+Status: **配布前 E2E 検証段階** — タスク 2/3/4/5/6/7/9 完了 (cosmetic skipped 項目除き)、残りは task 8 (E2E 手動検証) と task 10 (`v0.1.0` tag → release.yml 初回稼働)。詳細手順は [docs/plans/portable-builds-e2e.md](portable-builds-e2e.md)
 Branch: `chore/portable-builds`
-Last updated: 2026-05-06 (実装進捗反映)
+Last updated: 2026-05-07 (E2E 手順書を別ファイル化、両 binary 全機能の Go/Bun 移行完了)
+
+## 0. 2026-05-07 時点のスナップショット
+
+§5 の詳細タスクリストは実装史を残すために原文のまま保存しているが、当時の ⏸ / 🟡 マーカは古い。現状はこの節を真とする (commit `1143448` 時点):
+
+| Task | 状態 | 主な commit |
+| --- | --- | --- |
+| 2  Go hardening | ✅ | `a0f1044` 〜 `06b0b30` (originally tracked) |
+| 3  CLI subcommands | ✅ | `f10bc46` (sync), `e96a2f4` (translate skeleton), `1402684` (retranslate spawn), `06a53a4` (sync preflight), `3f8c9ad` (skill go-generate) |
+| 4-A〜4-H Web hardening + UUIDv7 移行 | ✅ | `aa6507c` (Bun uuidx), `82edd59` (BLOB PKs), `6c23e3d` (explain spawn merge) |
+| 4-G `bun fmt` | ⏭ | Bun 1.4 待ち。skipped 暫定維持 |
+| 5  Web `/admin/fetch` UI | ✅ | `d739e28` (subagent merge of `609193d`) |
+| 6  release.yml | ✅ | `f30743a` |
+| 7  `go-tests.yml` 統合 | ✅ | `8d7fd48` |
+| 8  E2E 動作確認 | ⏸ | 手順は [portable-builds-e2e.md](portable-builds-e2e.md)。実 LLM トークンを使う節は配布前に流す |
+| 9  README 更新 | ✅ | `78390fd` (+ `1143448` で `tools.translate` を追記) |
+| 10 tag `v0.1.0` push → release.yml | ⏸ | task 8 のスモークが緑になってから |
+
+追加機能 (当初計画外で必要になり実装):
+- **Migration 003 のデータ保存式適用** — `internal/sqlite` に `OpenWith(opts)` + `captureLegacyV2 / restoreLegacyV2` (commit `7db62a4`)。`.pre-003.bak` 自動生成 + UUIDv7 採番 + host_id 刻印で v2→v3 が無損失。
+- **`tools.translate.{client,model,bin}` 設定駆動** — `examtopicsdl translate retranslate / explain` の adapter 切替を config.json で制御 (commit `1143448`)。flag > env > config > "claude" の優先順。
+- **skill source-of-truth 化 + go generate** — `skills/exam-translator.md` と `agents/exam-translator-worker.md` を repo root master、`tools/skillsync` で `internal/translate/assets/` (Go embed、tracked) と `.gemini/` (gitignore、dev-local) へ配信 (commit `3f8c9ad`)。CI は `internal/translate/assets/` の drift だけ守る — `.gemini/` 側は外部 Python script 参照を含むため意図的にトラックしない (Option A)。
 
 ## 1. 目的とスコープ
 
