@@ -9,6 +9,7 @@ name: release
 
 on:
   push:
+    branches: [main]
     tags:
       - "v*"
   pull_request:
@@ -21,6 +22,13 @@ on:
       - "migrations/**"
       - ".github/workflows/release.yml"
   workflow_dispatch:
+
+# go-build / bun-build only run after their respective check job
+# (go-check / bun-check) passes — see `needs:` on each matrix job
+# below. That means a failed `go test -race` or `bun test` aborts
+# the matrix before any binary is built, and the release job is
+# itself gated on both matrix jobs succeeding. Tests gate builds
+# without needing an extra explicit barrier.
 
 # Cancel superseded runs on the same ref so a quick succession of
 # PR pushes doesn't queue up duplicate matrix builds.
