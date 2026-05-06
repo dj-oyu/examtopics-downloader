@@ -120,7 +120,7 @@ func runSQLiteMode(path, provider, grep, token string, noCache, saveUrls bool) e
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	w := sqlite.NewWriter(db)
 	if err := w.Begin(); err != nil {

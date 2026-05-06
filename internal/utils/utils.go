@@ -39,7 +39,7 @@ type AutoCloseFile struct {
 
 func (f *AutoCloseFile) Close() {
 	if f.File != nil {
-		f.File.Close()
+		_ = f.File.Close()
 		f.File = nil
 	}
 }

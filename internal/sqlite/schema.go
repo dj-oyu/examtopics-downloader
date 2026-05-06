@@ -99,15 +99,15 @@ func Open(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("sqlite open %s: %w", path, err)
 	}
 	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("enable fk: %w", err)
 	}
 	if _, err := db.Exec(SchemaDDL); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 	if err := migrateQuestionsAddColumns(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return db, nil
@@ -135,7 +135,7 @@ func pragmaTableInfo(db *sql.DB, table string) (map[string]struct{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	cols := map[string]struct{}{}
 	for rows.Next() {
 		var cid int

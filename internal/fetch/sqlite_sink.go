@@ -41,7 +41,7 @@ func QuestionDataToRecord(qd *models.QuestionData, examDisplay string, choices m
 		// Cache-path URLs have no `-question-N-discussion` segment; fall back
 		// to the Title's "question #N" suffix written by ConvertCachedJSON.
 		if m := questionHashTitleRe.FindStringSubmatch(qd.Title); m != nil {
-			fmt.Sscanf(m[1], "%d", &qnum)
+			_, _ = fmt.Sscanf(m[1], "%d", &qnum)
 		}
 	}
 	rec := &sqlite.QuestionRecord{

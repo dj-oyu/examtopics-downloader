@@ -39,14 +39,14 @@ func FetchURL(url string, client http.Client) []byte {
 
 		if resp.StatusCode == http.StatusOK {
 			body, err := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if err != nil {
 				log.Printf("failed to read response body: %v", err)
 				return nil
 			}
 			return body
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		if resp.StatusCode != http.StatusServiceUnavailable {
 			log.Printf("request failed with status code: %d", resp.StatusCode)
