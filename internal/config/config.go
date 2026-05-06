@@ -110,23 +110,36 @@ func candidatePaths() []string {
 	return out
 }
 
-// userConfigPath returns the platform-conventional per-user config file
-// location. Empty string means we couldn't determine a sensible default
-// (e.g., no HOME and no APPDATA).
-func userConfigPath() string {
+// UserConfigDir returns the platform-conventional per-user config
+// directory for examtopics (e.g., %APPDATA%\examtopics on Windows,
+// $XDG_CONFIG_HOME/examtopics or ~/.config/examtopics elsewhere).
+// Empty string means we couldn't determine a sensible default (no
+// HOME, no APPDATA, no XDG_CONFIG_HOME). Callers append their own
+// filename — config.json here, .env in internal/utils.
+func UserConfigDir() string {
 	if runtime.GOOS == "windows" {
 		if v := os.Getenv("APPDATA"); v != "" {
-			return filepath.Join(v, "examtopics", "config.json")
+			return filepath.Join(v, "examtopics")
 		}
 	}
 	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
-		return filepath.Join(v, "examtopics", "config.json")
+		return filepath.Join(v, "examtopics")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return ""
 	}
-	return filepath.Join(home, ".config", "examtopics", "config.json")
+	return filepath.Join(home, ".config", "examtopics")
+}
+
+// userConfigPath returns the per-user config.json location, or "" if
+// no such path can be determined.
+func userConfigPath() string {
+	dir := UserConfigDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "config.json")
 }
 
 // tryLoad reads path, strips forbidden keys (with a stderr warning), and
