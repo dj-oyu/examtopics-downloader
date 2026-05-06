@@ -82,12 +82,23 @@ func runSyncMerge(out io.Writer, args []string) int {
 	fs.SetOutput(out)
 	dst := fs.String("d", "", "Destination DB to merge into (required)")
 	from := fs.String("from", "", "Peer DB to merge from (required)")
+	skipTime := fs.Bool("skip-time-check", false, "Skip the system clock synchronization probe")
+	allowWAL := fs.Bool("allow-wal", false, "Allow merging from a peer DB that still has a populated -wal sidecar")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if *dst == "" || *from == "" {
 		w.Println("sync merge: -d and --from are required")
 		return 2
+	}
+	if err := (syncpkg.Preflight{
+		PeerPath:     *from,
+		SkipTimeSync: *skipTime,
+		SkipWALCheck: *allowWAL,
+		Stderr:       os.Stderr,
+	}).Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "sync merge: %v\n", err)
+		return 1
 	}
 	db, err := sqlite.OpenWith(*dst, syncOpenOpts())
 	if err != nil {
@@ -109,12 +120,23 @@ func runSyncContent(out io.Writer, args []string) int {
 	fs.SetOutput(out)
 	dst := fs.String("d", "", "Destination DB to overwrite (required)")
 	from := fs.String("from", "", "Master DB whose content to copy (required)")
+	skipTime := fs.Bool("skip-time-check", false, "Skip the system clock synchronization probe")
+	allowWAL := fs.Bool("allow-wal", false, "Allow ingesting a master DB that still has a populated -wal sidecar")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if *dst == "" || *from == "" {
 		w.Println("sync content: -d and --from are required")
 		return 2
+	}
+	if err := (syncpkg.Preflight{
+		PeerPath:     *from,
+		SkipTimeSync: *skipTime,
+		SkipWALCheck: *allowWAL,
+		Stderr:       os.Stderr,
+	}).Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "sync content: %v\n", err)
+		return 1
 	}
 	db, err := sqlite.OpenWith(*dst, syncOpenOpts())
 	if err != nil {
