@@ -9,6 +9,8 @@ import {
   listOpenThreads,
   setThreadAgentSessionId,
 } from "./db";
+import { join } from "node:path";
+import { loadConfig } from "./config";
 import { logEvent, summarize, LOG_PATH } from "./agent_log";
 // AGENTS.md is the canonical source of agent prompt rules. Embedding it via
 // a text import frees the compiled Bun binary from runtime filesystem
@@ -27,14 +29,16 @@ console.log(`[agent] log file: ${LOG_PATH}`);
 // placement.
 const SPAWN_CWD = process.cwd();
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
+// Web retranslate now spawns the Go CLI, which in turn spawns the chosen
+// LLM adapter (claude by default). Config-driven so a release zip that
+// places the binary next to the web server still works with a relative
+// hint.
+const EXAMTOPICSDL_BIN = process.env.EXAMTOPICSDL_BIN ?? "examtopicsdl";
+const TRANSLATE_CLIENT = process.env.EXAMTOPICS_TRANSLATE_CLIENT ?? "claude";
 const EXPLAIN_ALLOWED_TOOLS =
   "Bash,mcp__claude_ai_AWS_Knowledge_MCP_Server__aws___search_documentation," +
   "mcp__claude_ai_AWS_Knowledge_MCP_Server__aws___read_documentation," +
   "mcp__claude_ai_AWS_Knowledge_MCP_Server__aws___recommend";
-const RETRANS_ALLOWED_TOOLS = "Bash,Read,Write";
-// Translation is a constrained, structured task — Sonnet hits the cost/quality
-// sweet spot. Override via env if you want to A/B with Haiku/Opus.
-const RETRANS_MODEL = process.env.RETRANS_MODEL ?? "claude-sonnet-4-6";
 
 type ExplainJob = { kind: "explain"; slug: string; tid: string };
 type RetransJob = { kind: "retranslate"; slug: string; qid: number };
@@ -101,39 +105,6 @@ ${rules}
 5. After reply succeeds, stop. Do not loop.
 
 When the user follows up in this same thread (you'll be resumed via --resume on the same session), repeat steps 1–5 for the new latest user message.`;
-}
-
-function buildRetranslatePrompt(slug: string, qid: number): string {
-  const stagingFile = `_retrans_${slug}_${qid}.json`;
-  return `You are translating ONE AWS exam question into Japanese for the Exam Studio DB. Apply the canonical rules in \`.gemini/agents/exam-translator-worker.md\` (read it first if you haven't seen them). CWD is the repository root.
-
-Target row: id=${qid} in ${slug}.db. The previous translation has been cleared (all _ja columns are NULL); your job is to produce a fresh, correct translation.
-
-Translation guidelines (do NOT diverge):
-- AWS service names stay in English (Amazon S3, AWS Lambda, Amazon Aurora).
-- 平叙文 / である調 (NOT 敬体).
-- If \`suggested_answer\` length > 1 (multi-select), prepend \`(複数選択) \` to question_text_ja.
-- Choices A–E: keep length and tone consistent.
-- explanation_ja: 2–3 sentences covering 正解の根拠 + 主要な不正解の根拠. Use the \`comments\` column when it adds counter-arguments or community consensus.
-
-Steps:
-1. Read the row source: \`uv run tools/translate.py -d ${slug}.db show ${qid}\`. The output JSON has \`question_text\`, \`choices[].text\`, \`suggested_answer\`, \`comments\`. The \`existing_ja\` block is intentionally empty (we cleared it).
-2. Translate per the guidelines above.
-3. Write a JSON ARRAY with exactly ONE object to \`${stagingFile}\` (UTF-8). Schema:
-   \`\`\`json
-   [
-     {
-       "id": ${qid},
-       "question_text_ja": "...",
-       "explanation_ja": "...",
-       "choices_ja": { "A": "...", "B": "...", "C": "...", "D": "..." }
-     }
-   ]
-   \`\`\`
-   Include every choice label that exists for the row.
-4. Save: \`python .gemini/skills/exam-translator/scripts/batch_helper.py ${slug}.db ${stagingFile}\`
-5. Delete \`${stagingFile}\` after the save succeeds.
-6. Stop. Do not loop. Do not echo the translated Japanese back to me.`;
 }
 
 /**
@@ -597,38 +568,47 @@ async function runExplain(slug: string, tid: string): Promise<void> {
 }
 
 async function runRetranslate(slug: string, qid: number): Promise<void> {
-  const prompt = buildRetranslatePrompt(slug, qid);
+  // Web no longer spawns the LLM directly. examtopicsdl owns the
+  // read row → adapter spawn → write back loop, so the JSON contract
+  // is enforced by Go tests and we don't need to babysit prompt
+  // engineering from the web side. The chosen adapter is fed to the
+  // CLI via -client; default mirrors the historical Claude path.
+  const dbPath = join(loadConfig().dataDir, `${slug}.db`);
+  const args = [
+    "translate",
+    "retranslate",
+    "-db",
+    dbPath,
+    "-qid",
+    String(qid),
+    "-client",
+    TRANSLATE_CLIENT,
+  ];
   logEvent("spawn_initial", {
     slug,
     qid,
     kind: "retranslate",
-    prompt: summarize(prompt),
+    bin: EXAMTOPICSDL_BIN,
+    args,
   });
-  const result = await spawnClaude({
+  const result = await spawnBinary({
+    bin: EXAMTOPICSDL_BIN,
     cwd: SPAWN_CWD,
-    args: [
-      "-p",
-      prompt,
-      "--model",
-      RETRANS_MODEL,
-      "--output-format",
-      "json",
-      "--allowed-tools",
-      RETRANS_ALLOWED_TOOLS,
-    ],
+    args,
   });
   logEvent("spawn_result", {
     slug,
     qid,
     kind: "retranslate",
-    model: RETRANS_MODEL,
+    bin: EXAMTOPICSDL_BIN,
+    client: TRANSLATE_CLIENT,
     exit_code: result.exitCode,
     stdout: summarize(result.stdout),
     stderr: summarize(result.stderr),
   });
   if (result.exitCode !== 0) {
     throw new Error(
-      `claude exited ${result.exitCode}: ${result.stderr.slice(-500)}`
+      `examtopicsdl translate exit ${result.exitCode}: ${result.stderr.slice(-500)}`
     );
   }
 }
@@ -678,7 +658,15 @@ async function spawnClaude(opts: {
   cwd: string;
   args: string[];
 }): Promise<SpawnResult> {
-  const proc = Bun.spawn([CLAUDE_BIN, ...opts.args], {
+  return spawnBinary({ bin: CLAUDE_BIN, cwd: opts.cwd, args: opts.args });
+}
+
+async function spawnBinary(opts: {
+  bin: string;
+  cwd: string;
+  args: string[];
+}): Promise<SpawnResult> {
+  const proc = Bun.spawn([opts.bin, ...opts.args], {
     cwd: opts.cwd,
     stdout: "pipe",
     stderr: "pipe",
