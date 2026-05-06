@@ -8,9 +8,16 @@ import { resolve, basename, sep } from "node:path";
 // version order.
 import sql001 from "../../migrations/001_explanation_messages_grounding.sql" with { type: "text" };
 import sql002 from "../../migrations/002_thread_agent_session.sql" with { type: "text" };
+import { loadConfig } from "./config";
 
-const PROJECT_ROOT = resolve(import.meta.dir, "../..");
-const PROJECT_ROOT_PREFIX = PROJECT_ROOT.endsWith(sep) ? PROJECT_ROOT : PROJECT_ROOT + sep;
+// dataDir is the directory we treat as the source of *.db files, and
+// the boundary every slug must stay within (path-traversal guard).
+// Sourced from loadConfig() so the same EXAMTOPICS_DATA_DIR /
+// config.json contract drives both the Go CLI and the Bun web. The
+// previous import.meta.dir-based PROJECT_ROOT became a virtual path
+// inside `bun build --compile` outputs (§2 notice 3).
+const dataDir = loadConfig().dataDir;
+const dataDirPrefix = dataDir.endsWith(sep) ? dataDir : dataDir + sep;
 const SLUG_RE = /^[A-Za-z0-9._-]+$/;
 
 type Migration = { version: number; name: string; sql: string };
@@ -122,9 +129,9 @@ function validateSlug(slug: string): void {
 
 export function slugToPath(slug: string): string {
   validateSlug(slug);
-  const p = resolve(PROJECT_ROOT, `${slug}.db`);
-  if (!p.startsWith(PROJECT_ROOT_PREFIX)) {
-    throw new InvalidSlugError(`slug escapes project root: ${slug}`);
+  const p = resolve(dataDir, `${slug}.db`);
+  if (!p.startsWith(dataDirPrefix)) {
+    throw new InvalidSlugError(`slug escapes data dir: ${slug}`);
   }
   return p;
 }
@@ -173,9 +180,14 @@ export type ExamSummary = {
 };
 
 export function discoverExams(): ExamSummary[] {
-  const files = readdirSync(PROJECT_ROOT).filter(
-    (f) => f.endsWith(".db") && !f.startsWith(".")
-  );
+  let files: string[];
+  try {
+    files = readdirSync(dataDir).filter(
+      (f) => f.endsWith(".db") && !f.startsWith(".")
+    );
+  } catch {
+    return [];
+  }
   const out: ExamSummary[] = [];
   for (const f of files) {
     const slug = basename(f, ".db");

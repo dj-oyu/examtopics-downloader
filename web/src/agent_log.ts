@@ -1,8 +1,12 @@
 import { mkdirSync, appendFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { loadConfig } from "./config";
 
-const PROJECT_ROOT = resolve(import.meta.dir, "../..");
-const LOG_DIR = process.env.AGENT_LOG_DIR ?? resolve(PROJECT_ROOT, "logs");
+// LOG_DIR resolves to the config-driven log directory unless the caller
+// pins it explicitly via AGENT_LOG_DIR. Removing the import.meta.dir
+// derivation makes the agent log location well-defined under
+// `bun build --compile` instead of becoming a virtual path.
+const LOG_DIR = process.env.AGENT_LOG_DIR ?? loadConfig().logDir;
 const LOG_FILE =
   process.env.AGENT_LOG_FILE ?? resolve(LOG_DIR, "agent.jsonl");
 const ENABLED = (process.env.AGENT_LOG ?? "1") !== "0";
