@@ -1,11 +1,23 @@
 import { Database } from "bun:sqlite";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { resolve, basename, sep } from "node:path";
+// Migration SQL is embedded at build time so the compiled Bun binary
+// does not depend on a `migrations/` directory next to the executable
+// (§2 notice 2 of docs/plans/portable-builds.md). Adding a future
+// migration: import it as text below and append to MIGRATIONS in
+// version order.
+import sql001 from "../../migrations/001_explanation_messages_grounding.sql" with { type: "text" };
+import sql002 from "../../migrations/002_thread_agent_session.sql" with { type: "text" };
 
 const PROJECT_ROOT = resolve(import.meta.dir, "../..");
 const PROJECT_ROOT_PREFIX = PROJECT_ROOT.endsWith(sep) ? PROJECT_ROOT : PROJECT_ROOT + sep;
-const MIGRATIONS_DIR = resolve(PROJECT_ROOT, "migrations");
 const SLUG_RE = /^[A-Za-z0-9._-]+$/;
+
+type Migration = { version: number; name: string; sql: string };
+const MIGRATIONS: Migration[] = [
+  { version: 1, name: "001_explanation_messages_grounding", sql: sql001 },
+  { version: 2, name: "002_thread_agent_session", sql: sql002 },
+];
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS attempts (
@@ -78,28 +90,15 @@ function applyPendingMigrations(db: Database): void {
       .all()
       .map((r) => r.version)
   );
-  let entries: string[];
-  try {
-    entries = readdirSync(MIGRATIONS_DIR);
-  } catch {
-    return;
-  }
-  const files = entries
-    .filter((f) => /^\d+_.*\.sql$/.test(f))
-    .sort((a, b) => a.localeCompare(b));
-  for (const f of files) {
-    const m = f.match(/^(\d+)_(.*)\.sql$/);
-    if (!m) continue;
-    const version = parseInt(m[1], 10);
-    if (applied.has(version)) continue;
-    const sql = readFileSync(resolve(MIGRATIONS_DIR, f), "utf-8");
+  for (const m of MIGRATIONS) {
+    if (applied.has(m.version)) continue;
     db.exec("PRAGMA foreign_keys = OFF");
     try {
       db.exec("BEGIN");
-      db.exec(sql);
+      db.exec(m.sql);
       db.run("INSERT INTO schema_version(version, name) VALUES (?, ?)", [
-        version,
-        f.replace(/\.sql$/, ""),
+        m.version,
+        m.name,
       ]);
       db.exec("COMMIT");
     } catch (e) {

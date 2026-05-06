@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import {
   closeThread,
   discoverExams,
@@ -12,11 +10,22 @@ import {
   setThreadAgentSessionId,
 } from "./db";
 import { logEvent, summarize, LOG_PATH } from "./agent_log";
+// AGENTS.md is the canonical source of agent prompt rules. Embedding it via
+// a text import frees the compiled Bun binary from runtime filesystem
+// lookups (§2 notice 7 of docs/plans/portable-builds.md): the bytes ship
+// inside the binary instead of being resolved relative to import.meta.dir,
+// which becomes a virtual path after `bun build --compile`.
+import agentsMarkdown from "../../AGENTS.md" with { type: "text" };
 
 console.log(`[agent] log file: ${LOG_PATH}`);
 
-const PROJECT_ROOT = resolve(import.meta.dir, "../..");
-const AGENTS_MD = resolve(PROJECT_ROOT, "AGENTS.md");
+// SPAWN_CWD is where agent.ts's child processes (claude CLI today) run.
+// Using process.cwd() keeps the value real in both `bun run` and
+// `bun build --compile` modes — the previous import.meta.dir-based
+// PROJECT_ROOT became a virtual path inside compiled binaries. Task 4-C
+// will route this through loadConfig().dataDir for fully explicit
+// placement.
+const SPAWN_CWD = process.cwd();
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
 const EXPLAIN_ALLOWED_TOOLS =
   "Bash,mcp__claude_ai_AWS_Knowledge_MCP_Server__aws___search_documentation," +
@@ -61,20 +70,18 @@ const jobKey = (j: Job): string =>
     ? explainKey(j.slug, j.tid)
     : retransKey(j.slug, j.qid);
 
-let cachedRulesExcerpt: string | null = null;
+// rulesExcerpt is computed once at module load — the AGENTS.md content is
+// known statically at build time so there's no need for the lazy/cached
+// pattern the previous filesystem reader used.
+const rulesExcerpt = (() => {
+  const m = agentsMarkdown.match(
+    /<!-- AGENT_REPLY_PROMPT_START -->([\s\S]*?)<!-- AGENT_REPLY_PROMPT_END -->/
+  );
+  return m ? m[1].trim() : "";
+})();
 
 function loadRulesExcerpt(): string {
-  if (cachedRulesExcerpt !== null) return cachedRulesExcerpt;
-  try {
-    const md = readFileSync(AGENTS_MD, "utf-8");
-    const m = md.match(
-      /<!-- AGENT_REPLY_PROMPT_START -->([\s\S]*?)<!-- AGENT_REPLY_PROMPT_END -->/
-    );
-    cachedRulesExcerpt = m ? m[1].trim() : "";
-  } catch {
-    cachedRulesExcerpt = "";
-  }
-  return cachedRulesExcerpt;
+  return rulesExcerpt;
 }
 
 function buildExplainInitialPrompt(slug: string, tid: number): string {
@@ -517,7 +524,7 @@ async function runExplain(slug: string, tid: number): Promise<void> {
       user_content: summarize(userContent),
     });
     const ok = await spawnClaude({
-      cwd: PROJECT_ROOT,
+      cwd: SPAWN_CWD,
       args: [
         "--resume",
         sessionId,
@@ -562,7 +569,7 @@ async function runExplain(slug: string, tid: number): Promise<void> {
     prompt: summarize(initialPrompt),
   });
   const fresh = await spawnClaude({
-    cwd: PROJECT_ROOT,
+    cwd: SPAWN_CWD,
     args: [
       "-p",
       initialPrompt,
@@ -598,7 +605,7 @@ async function runRetranslate(slug: string, qid: number): Promise<void> {
     prompt: summarize(prompt),
   });
   const result = await spawnClaude({
-    cwd: PROJECT_ROOT,
+    cwd: SPAWN_CWD,
     args: [
       "-p",
       prompt,
