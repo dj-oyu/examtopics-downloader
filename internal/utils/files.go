@@ -3,31 +3,62 @@ package utils
 import (
 	"bufio"
 	"bytes"
-	"regexp"
 	"examtopics-downloader/internal/models"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/mandolyte/mdtopdf"
 	"github.com/yuin/goldmark"
 )
 
+// writeErr is a tiny accumulator that lets a sequence of fmt.Fprintf
+// calls keep the first error and skip subsequent writes, so a disk-full
+// or broken-pipe failure doesn't get silently lost mid-document.
+type writeErr struct {
+	w   io.Writer
+	err error
+}
+
+func (we *writeErr) printf(format string, args ...any) {
+	if we.err != nil {
+		return
+	}
+	if _, err := fmt.Fprintf(we.w, format, args...); err != nil {
+		we.err = err
+	}
+}
+
+func (we *writeErr) println(s string) {
+	if we.err != nil {
+		return
+	}
+	if _, err := fmt.Fprintln(we.w, s); err != nil {
+		we.err = err
+	}
+}
+
 func writeFile(filename string, content any) {
 	file := CreateFile(filename)
 	defer file.Close()
 
+	we := &writeErr{w: file}
 	switch v := content.(type) {
 	case string:
-		fmt.Fprintln(file, v)
+		we.println(v)
 	case []string:
 		for _, line := range v {
-			fmt.Fprintln(file, line)
+			we.println(line)
 		}
 	default:
 		log.Printf("writeFile: unsupported content type %T", v)
 		return
+	}
+	if we.err != nil {
+		log.Printf("writeFile %s: %v", filename, we.err)
 	}
 }
 
@@ -35,34 +66,39 @@ func WriteData(dataList []models.QuestionData, outputPath string, commentBool bo
 	file := CreateFile(outputPath)
 	defer file.Close()
 
-	fmt.Fprintf(file, "# Exam Topics Questions\n\n")
-	fmt.Fprintf(file, "@thatonecodes\n\n")
+	we := &writeErr{w: file}
+	we.printf("# Exam Topics Questions\n\n")
+	we.printf("@thatonecodes\n\n")
 
 	for _, data := range dataList {
 		if data.Title == "" {
 			continue
 		}
 
-		fmt.Fprintf(file, "## %s\n\n", data.Title)
-		fmt.Fprintf(file, "%s\n\n", data.Header)
+		we.printf("## %s\n\n", data.Title)
+		we.printf("%s\n\n", data.Header)
 
 		if data.Content != "" {
-			fmt.Fprintf(file, "%s\n\n", data.Content)
+			we.printf("%s\n\n", data.Content)
 		}
 
 		for _, question := range data.Questions {
-			fmt.Fprintf(file, "%s\n\n", question)
+			we.printf("%s\n\n", question)
 		}
 
-		fmt.Fprintf(file, "**Answer: %s**\n\n", data.Answer)
-		fmt.Fprintf(file, "**Timestamp: %s**\n\n", data.Timestamp)
-		fmt.Fprintf(file, "[View on ExamTopics](%s)\n\n", data.QuestionLink)
+		we.printf("**Answer: %s**\n\n", data.Answer)
+		we.printf("**Timestamp: %s**\n\n", data.Timestamp)
+		we.printf("[View on ExamTopics](%s)\n\n", data.QuestionLink)
 
 		if commentBool {
-			fmt.Fprintf(file, "Comments: %s\n", data.Comments)
+			we.printf("Comments: %s\n", data.Comments)
 		}
 
-		fmt.Fprintf(file, "----------------------------------------\n\n")
+		we.printf("----------------------------------------\n\n")
+	}
+	if we.err != nil {
+		log.Printf("WriteData %s: %v", outputPath, we.err)
+		return
 	}
 
 	switch fileType {
@@ -139,7 +175,9 @@ func deleteMarkdownFile(filePath string) {
 
 	if input == "y" || input == "yes" {
 		fmt.Println("Deleting file...")
-		os.Remove(filePath)
+		if err := os.Remove(filePath); err != nil {
+			log.Printf("delete %s: %v", filePath, err)
+		}
 	} else {
 		fmt.Println("Keeping file.")
 	}
