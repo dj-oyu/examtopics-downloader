@@ -12,8 +12,6 @@ import (
 	"examtopics-downloader/internal/models"
 	"examtopics-downloader/internal/sqlite"
 	"examtopics-downloader/internal/utils"
-
-	"github.com/cheggaaa/pb/v3"
 )
 
 // questionHashTitleRe matches "question #N" in the cache-path Title format
@@ -196,7 +194,7 @@ func GetAllPagesToSQLite(providerName, grepStr string, w *sqlite.Writer) (int, e
 		return 0, nil
 	}
 
-	bar := pb.StartNew(len(sortedLinks))
+	bar := utils.NewProgressBar("question pages (sqlite)", len(sortedLinks))
 	defer bar.Finish()
 
 	rl := utils.CreateRateLimiter(constants.RequestsPerSecond)

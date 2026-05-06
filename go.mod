@@ -7,6 +7,7 @@ require (
 	github.com/cheggaaa/pb/v3 v3.1.7
 	github.com/google/uuid v1.6.0
 	github.com/mandolyte/mdtopdf v1.5.3
+	github.com/mattn/go-isatty v0.0.20
 	github.com/yuin/goldmark v1.7.13
 	modernc.org/sqlite v1.50.0
 )
@@ -23,7 +24,6 @@ require (
 	github.com/go-pdf/fpdf v0.9.0 // indirect
 	github.com/jessp01/gohighlight v0.21.4 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/mcuadros/go-version v0.0.0-20190830083331-035f6764e8d2 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
