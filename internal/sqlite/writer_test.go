@@ -13,7 +13,7 @@ func newTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 
@@ -117,7 +117,7 @@ func TestWriter_UpsertQuestion_RoundTrip(t *testing.T) {
 		}
 		got[l] = txt
 	}
-	rows.Close()
+	_ = rows.Close()
 	if len(got) != 4 || got["A"] != "first" || got["D"] != "fourth" {
 		t.Errorf("choices mismatch: %v", got)
 	}
@@ -241,7 +241,9 @@ func TestWriter_UpsertQuestion_ReplacesDiscussion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
-	w.Commit()
+	if err := w.Commit(); err != nil {
+		t.Fatalf("first commit: %v", err)
+	}
 
 	if err := w.Begin(); err != nil {
 		t.Fatal(err)
@@ -253,13 +255,15 @@ func TestWriter_UpsertQuestion_ReplacesDiscussion(t *testing.T) {
 	if _, err := w.UpsertQuestion(rec); err != nil {
 		t.Fatalf("second upsert: %v", err)
 	}
-	w.Commit()
+	if err := w.Commit(); err != nil {
+		t.Fatalf("second commit: %v", err)
+	}
 
 	rows, err := db.Query(`SELECT poster, content FROM discussion WHERE question_id=? ORDER BY idx`, qid)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var got []string
 	for rows.Next() {
 		var p, c string

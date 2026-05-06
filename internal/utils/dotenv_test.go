@@ -21,11 +21,11 @@ func TestLoadDotEnv_BasicAndQuotes(t *testing.T) {
 	), 0644); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Unsetenv("PLAIN")
-	defer os.Unsetenv("SPACED")
-	defer os.Unsetenv("DQUOTED")
-	defer os.Unsetenv("SQUOTED")
-	defer os.Unsetenv("NO_VALUE")
+	t.Cleanup(func() {
+		for _, k := range []string{"PLAIN", "SPACED", "DQUOTED", "SQUOTED", "NO_VALUE"} {
+			_ = os.Unsetenv(k)
+		}
+	})
 
 	if err := LoadDotEnv(envPath); err != nil {
 		t.Fatal(err)
