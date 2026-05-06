@@ -1,6 +1,147 @@
 # Exam Topics Downloader
 
-This repo aims to make it possible for you to obtain all the exam questions from the examtopics website (which is paywalled).
+This repo aims to make it possible for you to obtain all the exam questions from the examtopics website (which is paywalled). It ships two binaries:
+
+- **`examtopicsdl`** — the Go CLI (scrape, quiz, sync, translate)
+- **`examtopics-web`** — a Bun-compiled web server that browses the scraped DB, runs an interactive review loop, and dispatches retranslate / explanation jobs
+
+Both binaries share a single `config.json` and operate on the same SQLite files in a configurable `dataDir`.
+
+## Quick start
+
+```bash
+# 1. Build (or grab from a Release zip)
+go build -o examtopicsdl ./cmd
+( cd web && bun build --compile --minify src/server.tsx --outfile ../examtopics-web )
+
+# 2. Scrape one exam into the data directory
+./examtopicsdl fetch -p amazon -s saa-c03 -sqlite saa-c03.db
+
+# 3. Start the web UI (default port 3000)
+./examtopics-web
+# → open http://127.0.0.1:3000
+```
+
+The first CLI invocation generates a `hostId` and writes it to a per-user `config.json` (see [Configuration](#configuration)). The web binary picks up the same file on the next start.
+
+## Subcommands
+
+| Subcommand | Purpose |
+| --- | --- |
+| `examtopicsdl fetch -p <provider> -s <slug>` | Scrape exam questions (the legacy flag-only form `examtopicsdl -p ... -s ...` still works as a backward-compat shim). |
+| `examtopicsdl quiz -db <path>` | Walk the question list interactively, recording every answer to the `attempts` table with a UUIDv7 + `host_id`. |
+| `examtopicsdl translate retranslate -db <path> -qid <id> -client <claude\|gemini\|codex\|exec>` | Re-translate one row end-to-end: read row → spawn LLM CLI → validate JSON → UPDATE `*_ja`. |
+| `examtopicsdl translate -client <name> -dry-run` | Materialize the bundled exam-translator skill into the chosen CLI's expected layout. |
+| `examtopicsdl sync snapshot -d <db> -o <out>` | `VACUUM INTO` a peer-safe snapshot. |
+| `examtopicsdl sync merge -d <local> --from <peer>` | Pull the peer's append-only rows + LWW thread updates. |
+| `examtopicsdl sync content -d <local> --from <master>` | Replace `questions` / `choices` / `discussion` from the master DB. |
+| `examtopicsdl providers` | Print the known scraper provider list as JSON. |
+| `examtopicsdl config` | Print the resolved runtime configuration. |
+| `examtopicsdl version` | Print the version embedded at build time. |
+
+## Configuration
+
+Two layered files, never one. Structural settings live in JSON, secrets stay in environment / `.env`:
+
+```jsonc
+// config.json — never put PATs / API keys here
+{
+  "hostId": "level-infinity-f5ec",   // auto-generated on first CLI run
+  "dataDir": "~/examtopics-data",    // *.db files live here
+  "logDir": "~/examtopics-data/logs",
+  "downloaderBin": "",               // empty → resolve via PATH
+  "web": {
+    "host": "127.0.0.1",
+    "port": 3000,
+    "adminEnabled": true
+  },
+  "scrape": {
+    "defaultProvider": "amazon",
+    "noCache": false
+  }
+}
+```
+
+```dotenv
+# .env — keep next to config.json
+GH_PAT=ghp_xxxxxxxxxxxxxxxxxxxx
+ANTHROPIC_API_KEY=sk-ant-xxx     # only if you use the explain / claude adapter
+```
+
+### Search paths (highest priority first)
+
+1. `EXAMTOPICS_CONFIG=/path/to/config.json` — explicit override
+2. `<cwd>/config.json`
+3. `<dir of binary>/config.json`
+4. Per-user — Linux/macOS `$XDG_CONFIG_HOME/examtopics/config.json` (default `~/.config/examtopics/config.json`); Windows `%APPDATA%\examtopics\config.json`
+5. Built-in defaults (`dataDir = cwd`, port 8787, etc.)
+
+`.env` resolution mirrors the same locations. Process environment variables (`EXAMTOPICS_DATA_DIR`, `EXAMTOPICS_LOG_DIR`, `EXAMTOPICS_HOST_ID`, `EXAMTOPICS_DOWNLOADER_BIN`, `GH_PAT`, …) override the JSON values.
+
+### Forbidden keys
+
+Parsing strips and warns on keys that hint at credential leakage: `ghPat`, `GH_PAT`, `token`, `Token`, `adminToken`, `EXAMTOPICS_ADMIN_TOKEN`, `apiKey`, `secret`. Move those values to `.env` or the process environment instead.
+
+## Web server (`examtopics-web`)
+
+The Bun binary serves the same SQLite DBs that the Go scraper wrote. Routes:
+
+- `/` — exam list with translated / answered / open-thread counts
+- `/e/<slug>/q` — question list with filter (`?filter=wrong|unanswered|all`)
+- `/e/<slug>/q/<id>` — single question + multi-turn explanation thread
+- `/e/<slug>/review` — wrong-answer review queue
+- `/requests` — open explanation threads across all DBs
+- `/e/<slug>/threads/<base32-id>/{messages.json,events,reply,resolve,dismiss}` — thread API; `<base32-id>` is the 26-char Crockford encoding of the UUIDv7 BLOB primary key
+
+### Spawned helpers
+
+| Trigger | Spawned binary | Override env |
+| --- | --- | --- |
+| Retranslate button | `examtopicsdl translate retranslate -client <name>` | `EXAMTOPICSDL_BIN`, `EXAMTOPICS_TRANSLATE_CLIENT` |
+| Open explanation thread | `claude` CLI (Claude Code) | `CLAUDE_BIN` |
+
+The retranslate path uses the bundled adapter contract; the explanation path still talks to `tools/translate.py` from inside Claude (multi-turn `--resume` migration is pending).
+
+## Multi-host sync (Phase 1)
+
+The intended topology is a single laptop / desktop ("母艦", intermittent) plus N always-on SBCs that hold the same DB. Migration 003 makes every multihost row UUIDv7 BLOB-keyed and stamps a `host_id`, so peer DBs merge with `INSERT OR IGNORE` (G-Set semantics) and `explanation_threads.updated_at` (LWW). Phase 1 ships scp-friendly subcommands; Phase 2 (HTTP `/sync/*`) is planned for a follow-up branch.
+
+```bash
+# desktop → SBC: distribute fresh content
+examtopicsdl sync snapshot -d ~/data/saa-c03.db -o /tmp/saa.snap
+scp /tmp/saa.snap user@sbc-a:/var/lib/examtopics/incoming.db
+ssh user@sbc-a -- examtopicsdl sync content \
+  -d /var/lib/examtopics/saa-c03.db \
+  --from /var/lib/examtopics/incoming.db
+
+# SBC → desktop: collect learning history
+ssh user@sbc-a -- examtopicsdl sync snapshot \
+  -d /var/lib/examtopics/saa-c03.db -o /tmp/sbc-a.snap
+scp user@sbc-a:/tmp/sbc-a.snap C:/data/incoming-sbc-a.db
+examtopicsdl sync merge -d C:/data/saa-c03.db --from C:/data/incoming-sbc-a.db
+```
+
+`sync merge` is **idempotent** — running it twice on the same peer snapshot is a no-op. `sync snapshot` uses `VACUUM INTO` so the resulting file is consistent regardless of WAL state.
+
+### NTP requirement
+
+LWW merge of `explanation_threads.updated_at` assumes monotonic clocks across all hosts. If a peer's clock skews backwards, newer remote updates may be discarded as "older" by the merge. Make sure each host has time sync enabled before running `sync merge`:
+
+- Linux desktops / SBCs: `timedatectl status` should show `System clock synchronized: yes` and an active service (`ntpd`, `chronyd`, or `systemd-timesyncd`)
+- Windows: `w32tm /query /status` should report a healthy `Source` and a recent `Last Successful Sync Time`
+
+The DB stores all timestamps in UTC (SQLite `CURRENT_TIMESTAMP` + UUIDv7's millisecond prefix), so per-host timezone differences are display-only and do not affect merge correctness.
+
+### Migration 003 safety
+
+The first time a CLI subcommand opens a v2 DB it:
+
+1. Takes a `VACUUM INTO`-based snapshot at `<db>.pre-003.bak`
+2. Captures every `attempts` / `explanation_threads` / `explanation_messages` row
+3. Runs the destructive `DROP / CREATE` SQL
+4. Re-inserts captured rows with freshly minted UUIDv7 ids and the local `host_id`
+
+Step 1 is a one-shot safety net — once you have verified the migrated DB is healthy, the `.pre-003.bak` files can be archived or deleted. Steps 2–4 happen inside one transaction, so a partial failure rolls everything back to the v2 state.
 
 ## Setting it Up
 
@@ -49,14 +190,35 @@ docker rm examtopics-downloader
 
 ### Building from Source
 
-1. First, you must install [Golang >= 1.24](https://go.dev/doc/install) from the offical website.
-2. Then, run `git clone https://github.com/thatonecodes/examtopics-downloader` in your terminal to clone the repo.
-3. `cd` into the directory: `cd examtopics-downloader`
-4. You can now run: `go run ./cmd/main.go -p cisco -exams`
+Both binaries cross-compile cleanly with no CGO and no native modules.
 
-(there will be compiled binaries in the future)
+```bash
+git clone https://github.com/thatonecodes/examtopics-downloader && cd examtopics-downloader
 
-## Command Line Arguments
+# Go CLI (Go ≥ 1.24)
+go build -trimpath -ldflags="-s -w -X main.version=$(git rev-parse --short HEAD)" \
+  -o examtopicsdl ./cmd
+# … or cross-compile for another OS:
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o examtopicsdl-linux-arm64 ./cmd
+
+# Bun web server (Bun ≥ 1.3)
+( cd web && bun install --frozen-lockfile \
+  && bun build --compile --minify src/server.tsx --outfile ../examtopics-web )
+```
+
+For ad-hoc runs without building:
+
+```bash
+go run ./cmd -p cisco -exams         # legacy flag form
+go run ./cmd fetch -p cisco -exams   # subcommand form
+( cd web && bun run dev )            # hot-reload web server
+```
+
+Pre-built binaries land on the [Releases](https://github.com/thatonecodes/examtopics-downloader/releases) page when a `vX.Y.Z` tag is pushed; the matrix covers `linux/amd64`, `linux/arm64`, `windows/amd64`, `windows/arm64` (Go) and `linux/amd64`, `linux/arm64`, `windows/amd64` (Bun web).
+
+## `fetch` subcommand: command line arguments
+
+Equivalent to the legacy flag-only form (`examtopicsdl -p ... -s ...`).
 
 ```
 Each command line argument you can provide when running the program:
