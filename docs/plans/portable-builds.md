@@ -2,7 +2,7 @@
 
 Status: 計画段階 (実装前)
 Branch: `chore/portable-builds`
-Last updated: 2026-04-30
+Last updated: 2026-05-06
 
 ## 1. 目的とスコープ
 
@@ -41,6 +41,9 @@ Last updated: 2026-04-30
 3. **DB ファイル発見ロジック**: `db.ts` は `PROJECT_ROOT = resolve(import.meta.dir, "../..")` でルートを決めて `*.db` を列挙している。`bun --compile` 後は `import.meta.dir` が virtual path になるため、`process.cwd()` か `EXAMTOPICS_DATA_DIR` env か `path.dirname(process.execPath)` を優先する切替を実装する必要がある。
 4. **CGO**: Go は `CGO_ENABLED=0` を明示してビルド (`modernc.org/sqlite` が pure Go なので問題ないが、誰かが将来 `mattn/go-sqlite3` を入れたときに早期検知できるようガードする)。
 5. **バージョンスキー**: `go.mod` は 1.25 だが CI は 1.24。1.25 に統一 or `stable` 指定にする。
+6. **runtime TS transpile (`web/src/client/loader.ts`)**: SSR 時にクライアント用 `.ts` を `import.meta.dir` 起点で `readFileSync` し、`Bun.Transpiler.transformSync` でブラウザ向け JS へ変換している (現状 `thread-live.ts`, `question-live.ts` の 2 本)。`bun --compile` 後は `.ts` ソースが FS に存在せず `statSync` で落ちるため、**text import への移行が必須**。`import threadLiveTs from "./thread-live.ts" with { type: "text" }` 形に書き換え、loader はキャッシュ層と Transpiler 呼び出しだけ残す (`Bun.Transpiler` 自体は compile binary でも利用可)。将来クライアント TS が増えたら明示インポートでマップに足す運用にする。
+7. **`AGENTS.md` の埋め込み (`web/src/agent.ts`)**: `loadRulesExcerpt()` がリポジトリルートの `AGENTS.md` を `readFileSync` し、`<!-- AGENT_REPLY_PROMPT_START/END -->` マーカで囲まれた区間を explanation エージェントのプロンプトに差し込んでいる。配布バイナリには `import agentsMd from "../../AGENTS.md" with { type: "text" }` で焼き付け、ファイル不在時の空文字フォールバックは撤去する (バイナリでは常に存在保証されるため)。
+8. **Web 側依存ライブラリ**: `web/package.json` の dependencies は `hono`, `marked` の 2 つのみで、両方 pure JS。ネイティブモジュール / WASM / `web/public/` 配下の静的アセット は **存在しない**。バイナリ化の阻害要因は全て上記の runtime fs アクセス側に局所化されており、依存追加・削除は不要。
 
 ## 3. アプローチ概要
 
@@ -423,6 +426,259 @@ You are an English-to-Japanese translator for AWS exam questions...
   - `.gitignore` 既存ホワイトリスト (`!.gemini/skills/exam-translator.md`) は削除
 - 各クライアント追加は **アダプタ 1 つ + テストを足すだけ** で済む構造を維持 (claude / codex 追加時に skill 本体を書き直さなくて良い)。
 
+## 3.7 マシン間同期 (multi-host sync)
+
+### 背景と前提
+
+母艦 (Windows desktop, intermittent) + 複数 SBC (常時稼働、現状 SBC-A / SBC-B) の構成で、**どのマシンでも学習・解説スレッド対話を行える**ようにする。母艦は取得・翻訳の独占権を持ち、SBC は配布された DB をベースに学習履歴と Q&A だけを書き込む。
+
+時計前提 (LWW のため必須):
+- 母艦: Windows w32time
+- SBC-A: `ntpd` (classic) running, `synchronized: yes`
+- SBC-B: `systemd-timesyncd` (本計画起草時に有効化済み), `synchronized: yes`
+- TZ は表示用なので各機異なって OK (DB は SQLite `CURRENT_TIMESTAMP` = UTC 固定、UUIDv7 内部時刻も epoch ms = UTC)
+
+### 3.7.1 同期対象テーブルと戦略
+
+| テーブル | 性質 | 同期戦略 |
+| ---- | ---- | ---- |
+| `questions` / `choices` / `discussion` | 母艦のみ書込 (スクレイパ生成物) | **母艦 → 各機への上書きコピー** (`sync content`)。SBC では `fetch` 不可 |
+| `schema_version` | migration 履歴 | 同期しない。各機が起動時に migration を流す |
+| `attempts` | 学習履歴。追記専用 (1 解答 = 1 行、編集なし) | **G-Set** (`INSERT OR IGNORE` で union) |
+| `explanation_messages` | スレッドメッセージ。追記専用 | **G-Set** (同上) |
+| `explanation_threads` | スレッド本体。`status`/`agent_session_id`/`closed_at` のみ可変 | **LWW** (`updated_at` が新しい側を採用) |
+
+### 3.7.2 スキーマ変更 (破壊的、migration 003)
+
+既存 INTEGER `AUTOINCREMENT` PK は host 横断で衝突するため廃止。**UUIDv7 (BLOB 16 byte)** を全機共通の論理 PK に採用。
+
+採用根拠:
+- BLOB(16) は TEXT(36) より storage 効率良し (約 1/2)
+- UUIDv7 先頭 48 bit = epoch ms なので時間順ソート可 (`id > <last_seen>` で増分取得 — phase 2 の HTTP sync で活用)
+- `WITHOUT ROWID` で TEXT/BLOB PK 自体が rowid となり、PK lookup の段数が 1 段減る
+- URL 化が必要な箇所では **base32 Crockford 26 文字** へエンコード (`/threads/01HZX5K2...` 形式、`internal/uuidx` パッケージで encode/decode)
+
+```sql
+-- migration 003_multihost_sync.sql
+
+-- 既存 attempts/explanation_threads/explanation_messages を全廃 (起草時点で母艦データのみ存在、ユーザ確認済みで破棄可)
+DROP TABLE IF EXISTS attempts;
+DROP TABLE IF EXISTS explanation_messages;  -- FK 解除のため先に
+DROP TABLE IF EXISTS explanation_threads;
+
+CREATE TABLE attempts (
+  id BLOB(16) PRIMARY KEY,                -- UUIDv7
+  question_id INTEGER NOT NULL REFERENCES questions(id),
+  selected TEXT NOT NULL,
+  is_correct INTEGER NOT NULL,
+  attempted_at TEXT NOT NULL,             -- ISO8601 UTC (UUIDv7 内部時刻と整合)
+  host_id TEXT NOT NULL                   -- "desktop-win", "sbc-a", "sbc-b" 等
+) WITHOUT ROWID;
+CREATE INDEX idx_attempts_q ON attempts(question_id);
+CREATE INDEX idx_attempts_host_time ON attempts(host_id, attempted_at);
+
+CREATE TABLE explanation_threads (
+  id BLOB(16) PRIMARY KEY,
+  question_id INTEGER NOT NULL REFERENCES questions(id),
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved','dismissed')),
+  agent_session_id TEXT,
+  created_at TEXT NOT NULL,
+  closed_at TEXT,
+  updated_at TEXT NOT NULL,               -- LWW タイムスタンプ。可変列 UPDATE のたび bump
+  host_id TEXT NOT NULL                   -- 作成元 (デバッグ用)
+) WITHOUT ROWID;
+CREATE INDEX idx_thr_qid ON explanation_threads(question_id);
+CREATE INDEX idx_thr_status ON explanation_threads(status);
+CREATE INDEX idx_thr_updated ON explanation_threads(updated_at);
+
+CREATE TABLE explanation_messages (
+  id BLOB(16) PRIMARY KEY,
+  thread_id BLOB(16) NOT NULL REFERENCES explanation_threads(id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK (role IN ('user','agent')),
+  author TEXT,
+  content TEXT NOT NULL,
+  reason_code TEXT CHECK (
+    reason_code IS NULL OR
+    reason_code IN ('comprehension','spec','ambiguous','translation')
+  ),
+  citations TEXT,
+  translation_diff TEXT,
+  created_at TEXT NOT NULL,
+  host_id TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE INDEX idx_msg_thread ON explanation_messages(thread_id);
+```
+
+実装影響:
+- Go 側: `github.com/gofrs/uuid` v5 で UUIDv7 生成 (`uuid.NewV7()`)。`internal/uuidx` パッケージに encode/decode (BLOB ⇄ Crockford base32) を集約
+- Bun 側: `Bun.randomUUIDv7()` (Bun 1.2+) で生成。ない環境用に `crypto.randomUUID()` ベースの fallback も用意 (時間ビットを epoch ms で上書き)
+- `web/src/db.ts` の `Number(r.lastInsertRowid)` 経路 (`createThread`, `appendMessage`) を **「INSERT 前に UUIDv7 を生成して明示渡し」** に書き換え (4-5 箇所)
+- URL ルート: `/threads/:id` の `id` を 26 文字 base32 として受け取る regex に変更 (`/^[0-9A-HJKMNP-TV-Z]{26}$/i`)
+
+### 3.7.3 host_id の付与
+
+- `config.json` に `"hostId": "<id>"` を必須化 (camelCase 統一)
+- 未設定なら起動時に `os.Hostname()` の小文字化 + ランダム 4 文字 suffix を生成して `config.json` に **書き戻し**、以後変えない
+- 推奨命名例: `desktop-win`, `sbc-a`, `sbc-b`
+
+### 3.7.4 Phase 1: ローカル merge (本ブランチに実装)
+
+#### サブコマンド
+
+```
+examtopicsdl sync snapshot -d <local.db> -o <out.db>
+  # local.db を VACUUM INTO で整合性のあるスナップショットへ。scp 前段で必須
+
+examtopicsdl sync merge -d <local.db> --from <peer.db>
+  # peer.db の append-only 行を G-Set union、threads を LWW 反映。idempotent
+
+examtopicsdl sync content -d <local.db> --from <master.db>
+  # questions/choices/discussion を母艦版で上書き (SBC が母艦から content を受け取るとき)
+```
+
+#### マージ SQL (sync merge の中身)
+
+```sql
+ATTACH DATABASE '<peer.db>' AS r;
+BEGIN;
+
+-- G-Sets: id 衝突なしの union
+INSERT OR IGNORE INTO attempts SELECT * FROM r.attempts;
+INSERT OR IGNORE INTO explanation_messages SELECT * FROM r.explanation_messages;
+
+-- LWW: 新規 thread は挿入、既存は updated_at が新しい側を採用
+INSERT OR IGNORE INTO explanation_threads SELECT * FROM r.explanation_threads;
+UPDATE explanation_threads SET
+  status           = (SELECT status           FROM r.explanation_threads rt WHERE rt.id = explanation_threads.id),
+  agent_session_id = (SELECT agent_session_id FROM r.explanation_threads rt WHERE rt.id = explanation_threads.id),
+  closed_at        = (SELECT closed_at        FROM r.explanation_threads rt WHERE rt.id = explanation_threads.id),
+  updated_at       = (SELECT updated_at       FROM r.explanation_threads rt WHERE rt.id = explanation_threads.id)
+WHERE EXISTS (
+  SELECT 1 FROM r.explanation_threads rt
+   WHERE rt.id = explanation_threads.id
+     AND rt.updated_at > explanation_threads.updated_at
+);
+
+COMMIT;
+DETACH DATABASE r;
+```
+
+#### 運用フロー (Phase 1)
+
+```bash
+# --- 母艦 → SBC 配布 (取得・翻訳後) ---
+examtopicsdl sync snapshot -d saa-c03.db -o /tmp/saa.snap
+scp /tmp/saa.snap user@sbc-a:/var/lib/examtopics/incoming.db
+ssh user@sbc-a -- examtopicsdl sync content \
+  -d /var/lib/examtopics/saa-c03.db \
+  --from /var/lib/examtopics/incoming.db
+
+# --- SBC → 母艦 学習結果合流 ---
+ssh user@sbc-a -- examtopicsdl sync snapshot \
+  -d /var/lib/examtopics/saa-c03.db -o /tmp/saa.snap
+scp user@sbc-a:/tmp/saa.snap C:/data/incoming-sbc-a.db
+examtopicsdl sync merge -d C:/data/saa-c03.db --from C:/data/incoming-sbc-a.db
+```
+
+USB メモリ経由 (air-gap) でも同等手順で動作する。
+
+### 3.7.5 Phase 2: HTTP sync (本ブランチでは未実装、別 PR で追加)
+
+#### 配置の方向 (重要設計判断)
+
+母艦は intermittent / SBC は常時稼働なので、**SBC 側が HTTP サーバ、母艦側がクライアント**の向きで設計する。母艦が起動したタイミングで自分から push/pull できるのが要件。
+
+```
+[母艦 (intermittent)]                        [SBC (always-on)]
+     |                                              |
+     | examtopicsdl sync sync http://sbc-a:3000    |
+     |--------- POST /sync/append (rows) ---------->|
+     |<-------- GET  /sync/since (rows) ------------|
+     |                                              |
+```
+
+#### サーバ側 (各 SBC の `examtopics-web`)
+
+- `GET /sync/since?host=<peer_id>&attempt_id=<hex>&msg_id=<hex>&thread_updated=<iso>` — peer の watermark 以降の差分を JSON で返す
+- `POST /sync/append` — peer から受け取った append 行と LWW 更新を `INSERT OR IGNORE` + LWW UPDATE で取り込む
+- 認可: `EXAMTOPICS_ADMIN_TOKEN` Bearer (§3.4 の `/admin/fetch` と共通)
+
+#### クライアント側 (母艦)
+
+- `examtopicsdl sync push <url> -d <local.db>` — local の差分を peer へ送信
+- `examtopicsdl sync pull <url> -d <local.db>` — peer の差分を local へ取り込み
+- `examtopicsdl sync sync <url> -d <local.db>` — pull → push の双方向収束 (1 コマンド)
+- `examtopicsdl sync sync-all -d <local.db>` — `config.json` の `peers` 配列を全件回す
+- `config.json` 例:
+  ```json
+  {
+    "hostId": "desktop-win",
+    "peers": [
+      "http://sbc-a.local:3000",
+      "http://sbc-b.local:3000"
+    ]
+  }
+  ```
+
+#### 増分同期の watermark
+
+ULID v7 の時間順序性により、UUID 比較で正しく未取得行のみ取れる:
+
+```sql
+SELECT * FROM attempts
+  WHERE id > :last_attempt_id_from_peer;   -- peer 側で発行済み &
+                                            -- かつ自分が未受信のもの
+
+SELECT * FROM explanation_threads
+  WHERE updated_at > :last_thread_watermark;
+```
+
+母艦のみ `sync_watermarks (peer_host_id TEXT PRIMARY KEY, last_attempt_id BLOB, last_msg_id BLOB, last_thread_updated_at TEXT)` テーブルを持つ (migration 004 — Phase 2 で追加、Phase 1 のスキーマには影響しない)。SBC 側は受信専用設計のため watermark テーブル不要。
+
+#### SBC 同士の合流
+
+母艦が intermittent なので、SBC ペア間も cron で `sync sync` を回すと最終収束が早い:
+
+```cron
+*/30 * * * *  examtopicsdl sync sync http://sbc-b.local:3000 -d /var/lib/examtopics/saa-c03.db
+```
+
+これで「いつでも誰かがオンラインなら時間が経てば全機合流」が成立。
+
+#### Phase 2 を後回しにできる根拠
+
+Phase 1 のスキーマ (UUIDv7 BLOB PK + host_id + LWW updated_at) は Phase 2 の HTTP 増分同期でも**そのまま使える**。Phase 2 で追加するのは:
+- HTTP ハンドラ 2 本 (web 側)
+- CLI サブコマンド 4 本 (Go 側)
+- watermark テーブル 1 つ (母艦のみ)
+
+これらは全て**純追加**で、Phase 1 の SBC 配布物に手を入れる必要がない。よって本ブランチでは Phase 1 のみ実装し、運用上 scp が面倒になった時点で Phase 2 を別ブランチで足す。
+
+### 3.7.6 既知のリスクと対処
+
+| リスク | 影響 | 対策 |
+| ---- | ---- | ---- |
+| SBC の時計が NTP 失敗で巻き戻る | LWW で新しい更新が古い扱いされ消失 | `examtopicsdl sync` 実行前に `timedatectl` の `synchronized: yes` を確認、no なら abort。README に監視 cron 例を載せる |
+| WAL 動作中の DB を直接 scp して不整合 | merge 時に foreign key 違反 / 半端な行 | **`sync snapshot` (`VACUUM INTO`) を必須前段に**。素の `scp <db>` は CLI で warn を出す (md5 で WAL 検出) |
+| BLOB UUID の URL encode/decode バグ | 既存 thread/message URL が壊れる | `internal/uuidx` を独立パッケージ化し、ラウンドトリップ property test (`encode(decode(x)) == x` を 10000 ランダム値) を CI に入れる |
+| `host_id` を運用中に変更 | 同じ機械の以前のデータが「他 host のデータ」扱いになり重複表示 | `config.json` に書き込んだら以後変更禁止のロックフィールドにする (起動時 hash 確認) |
+| Phase 2 で SBC が母艦からの POST を信用しすぎる | 悪意ある peer による任意 INSERT | Bearer token + 受信時に `host_id` フィールドが peer 側 token のオーナーと一致するか検証 |
+
+### 3.7.7 検証シナリオ (3 機ループバック)
+
+```
+1. 母艦で saa-c03.db を fetch + 5 問翻訳
+2. sync snapshot → scp で 2 SBC へ配布、各 SBC で sync content
+3. SBC-A で 3 問解答 (attempts 3 行追加)
+4. SBC-B で 1 スレッド作成 (threads 1 行 + messages 1 行追加)
+5. 母艦から: scp で 2 SBC のスナップショットを取得 → sync merge を 2 回
+6. 母艦のスナップショットを 2 SBC へ再配布 → 各 SBC で sync merge
+7. 全機の attempts/threads/messages 件数が一致することを確認
+8. 同じ peer.db を再度 sync merge してもデータが変わらないこと (idempotency)
+```
+
+これを CI のゴールデンテスト (3 つの一時 DB ファイルでループバック) として自動化。
+
 ## 4. GitHub Actions 設計
 
 新規ワークフロー: `.github/workflows/release.yml`
@@ -543,30 +799,44 @@ jobs:
 
 ## 5. 実装タスク (順番)
 
-1. **計画ドキュメント commit** ← 本 PR の最初のコミット (このファイル)
+1. **計画ドキュメント commit** ← 本 PR の最初のコミット (このファイル)。本計画は **2 段階で commit 済み** — (a) 初稿 (`9766af6`)、(b) Bun バイナリ化のブロッカ追記 + マシン間同期 §3.7 追記 (本 commit)。以降の commit は本リスト 2〜11 の各タスクに対応
 2. **Go 側の hardening**:
    - `go.mod` の Go バージョンと CI の `go-version` を揃える (`stable` 推奨)
    - `cmd/main.go` に `var version = "dev"` を追加
-   - `internal/config` パッケージ新設 (§3.5 の `Config` / `Load()`)
+   - `internal/config` パッケージ新設 (§3.5 の `Config` / `Load()`)。`hostId` フィールドを必須化 (§3.7.3)、未設定時は `os.Hostname()` + ランダム 4 文字 suffix を生成して書き戻し
    - `internal/utils/dotenv.go` に `LoadDotEnvAuto()` を追加 (config.json と同じ探索順)
+   - `internal/uuidx` パッケージ新設 (§3.7.2): UUIDv7 生成 (`gofrs/uuid` v5)、BLOB(16) ⇄ Crockford base32 26 文字の encode/decode、ラウンドトリップ property test
    - 進捗バー / log 出力を非 TTY で扱いやすい形に整える
    - `golangci-lint` の `.golangci.yml` 最小設定 (default linters + `errcheck`, `staticcheck`, `govet`)
-3. **Go CLI のサブコマンド化** (§3.6):
-   - `cmd/main.go` を dispatcher に書き換え (`fetch` / `quiz` / `translate` / `providers` / `config` / `version`)
+3. **Go CLI のサブコマンド化** (§3.6 / §3.7.4):
+   - `cmd/main.go` を dispatcher に書き換え (`fetch` / `quiz` / `translate` / `providers` / `config` / `version` / `sync`)
    - 旧フラグの後方互換 fallback (`examtopicsdl -p amazon -s ...` を `fetch` 互換扱い)
-   - `internal/quiz` パッケージ (TUI 出題ループ、attempts 永続化)
+   - `internal/quiz` パッケージ (TUI 出題ループ、attempts 永続化 — UUIDv7 を `INSERT` 前に生成)
    - `internal/translate` パッケージ:
      - `Client` interface + `gemini` / `claude` / `codex` / `exec` アダプタ
      - 未訳行の DB 反映ロジック (クライアント非依存)
    - `internal/skills` パッケージ + `//go:embed` で portable skill 同梱、`Materialize(client)`
    - `skills/exam-translator.md` を真とし、`go generate` で `.gemini/skills/` と `internal/skills/assets/` へ同期
    - `.gitignore` から `!.gemini/skills/exam-translator.md` の例外を撤去 (生成物化)
+   - `internal/sync` パッケージ + サブコマンド (§3.7.4):
+     - `sync snapshot -d <db> -o <out>` (`VACUUM INTO` で WAL 整合スナップショット)
+     - `sync merge -d <db> --from <peer.db>` (G-Set + LWW の SQL を ATTACH で実行)
+     - `sync content -d <db> --from <master.db>` (questions/choices/discussion 上書きコピー)
+     - 実行前に `timedatectl` 同期確認 (Linux のみ; Windows では w32time クエリ) — `synchronized: no` なら abort + ヘルプ
+     - 起動時に DB ファイルが WAL 状態 (`-wal`/`-shm` 残存 + 書込中) なら scp 不可警告
+   - migration `003_multihost_sync.sql` を追加 (§3.7.2)。既存 attempts/threads/messages を破棄 + UUIDv7 BLOB スキーマ再作成
 4. **Web 側の hardening**:
-   - `web/src/config.ts` 新設 (§3.5 の Bun 版 `loadConfig`)
-   - `db.ts` の migrations 読込を text import 配列へリファクタ (バイナリ単体動作のため)
+   - `web/src/config.ts` 新設 (§3.5 の Bun 版 `loadConfig`)。`hostId` を `loadConfig()` 経由で読み、INSERT 時に列に反映
+   - `db.ts` の migrations 読込を text import 配列へリファクタ (バイナリ単体動作のため)。新規 `003_multihost_sync.sql` を配列に追加
    - `db.ts` の `PROJECT_ROOT` を `loadConfig().dataDir` 起点に置換
+   - `db.ts` の PK 関連書き換え (§3.7.2): `Number(r.lastInsertRowid)` を使う `createThread` / `appendMessage` 等を **「INSERT 前に `Bun.randomUUIDv7()` で BLOB(16) を生成して明示渡し」** に変更。`thread_id` / `id` の型を `Uint8Array` (BLOB) に統一
+   - URL ルートの id parser 変更: `/threads/:id` の `:id` を 26 文字 Crockford base32 として decode する helper を追加 (`internal/uuidx` の Bun 移植)
+   - `client/loader.ts` を text import 化 (§2 注意点 6): `thread-live.ts` / `question-live.ts` を `with { type: "text" }` で取り込み、`readFileSync` + `import.meta.dir` 依存を撤去。loader API (`loadClientScript(name)`) は維持し、内部マップで分岐
+   - `agent.ts` の `AGENTS.md` 読込を text import 化 (§2 注意点 7): `loadRulesExcerpt()` を import 値ベースに置換、try/catch フォールバックは撤去
+   - `agent_log.ts` の `PROJECT_ROOT` 算出を `loadConfig().dataDir` 起点に置換 (`AGENT_LOG_DIR` env は引き続き優先)
    - `package.json` に `format` / `format:check` スクリプト追加 (Bun fmt or Biome)
    - 翻訳/解説エージェント呼び出しを `examtopicsdl translate` spawn に切替 (Python 版 `tools/translate.py` の依存を将来削除する布石)
+   - `bun build --compile` での smoke build を `bun test` の隣に追加し、上記 fs 撤去の回帰を CI で検出
 5. **Web の取得 UI 追加** (§3.4):
    - `resolveDownloaderPath()` ヘルパ + `Bun.spawn` 連携 (`examtopicsdl fetch` を呼ぶ)
    - `GET/POST /admin/fetch` ルートと SSE ログストリーム
@@ -609,12 +879,19 @@ jobs:
 | embedded skill と repo 内 `skills/exam-translator.md` がドリフト | translate の挙動が repo と配布で食い違う | `skills/` を真とし、`go generate` で `.gemini/skills/` と `internal/skills/assets/` を再生成。CI で `git diff --exit-code` ガード |
 | portable skill が「クライアント中立」になりきれず特定 LLM (例 gemini) 流儀の指示に偏る | 他クライアントで翻訳品質が落ちる | skill 本体は LLM 中立 markdown に保ち、クライアント固有の system プロンプトはアダプタ側に持たせる。各クライアントごとにゴールデンテスト (1 問で正常 JSON が返る) を CI で回す |
 | LLM API キーが各クライアントで env 名が違う (`GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) | 認証エラーで翻訳失敗 | examtopics 側は env を中継しない (各 CLI が自分で読む)。README に「使う client が要求する env を `.env` に書け」とだけ記載 |
+| SBC の時計が NTP 失敗で巻き戻る | LWW 同期で新しい更新が古い扱いされ消失 | `sync` 実行前に `timedatectl` の `synchronized: yes` を確認、no なら abort。README に同期監視 cron 例を載せる (§3.7.6) |
+| WAL 動作中の DB を直接 scp して不整合 | `sync merge` 時に foreign key 違反 / 半端な行 | `sync snapshot` (`VACUUM INTO`) を必須前段とする。素の `scp <db>` 直叩きを README で非推奨と明記 (§3.7.6) |
+| BLOB UUIDv7 の URL encode/decode バグ | 既存 thread / message URL が壊れる | `internal/uuidx` を Go/Bun の双方で実装し、ラウンドトリップ property test (`encode(decode(x)) == x` を 10000 ランダム値) を CI で実行 (§3.7.6) |
+| `host_id` を運用中に変更 | 同じ機械の以前のデータが「他 host のデータ」扱いになり重複表示 | `config.json` に書き込み後はロックフィールドにする (起動時 hash 確認、変更時は warn して旧 id を残す) |
+| 既存母艦 DB の attempts/threads/messages が破壊的 migration で消える | 学習履歴・スレッドのロスト | 起草時点で母艦のみが存在し本人合意済 (本ブランチ前提)。**migration 003 を流す前に手動バックアップを取る手順を README に明記**。CI でも migration 003 を走らせる前に `examtopicsdl sync snapshot` を実行する手順を例示 |
+| Phase 2 で SBC が母艦からの POST を信用しすぎる | 悪意ある peer による任意 INSERT (将来) | Phase 2 実装時に Bearer token + 受信時に `host_id` フィールドが peer 側 token のオーナーと一致するか検証 (§3.7.5) |
 
 ## 7. 完了条件
 
 - [ ] `release.yml` が main への push で warm に通る
 - [ ] tag push 時に Releases ページに 4×Go + 3〜4×Bun バイナリが出る
 - [ ] Linux/Windows どちらかの VM で実バイナリが起動する手動チェック完了
+- [ ] **`bun build --compile` 後の単一バイナリで Web が起動し、(a) `migrations/*.sql`, (b) `AGENTS.md`, (c) `client/*.ts` を一切 FS から読まずに正常動作することを確認 (起動後にバイナリ隣の関連ファイルを全削除しても動くこと)**
 - [ ] **`config.json` / `.env` が cwd / バイナリ隣 / `XDG_CONFIG_HOME` のいずれにあっても拾えることを Go/Bun 双方で確認**
 - [ ] **`config.json` に PAT 系キーが混入したとき warn が出て無視されることを確認**
 - [ ] **Web 管理画面 `/admin/fetch` から `examtopicsdl fetch` を spawn でき、SSE ログが流れ、`<dataDir>/<slug>.db` が生成されることを確認**
@@ -623,4 +900,12 @@ jobs:
 - [ ] **`go generate` 後 `skills/exam-translator.md` を真とし、`.gemini/skills/` と `internal/skills/assets/` が byte 一致 (CI ガード)**
 - [ ] **`-client gemini` / `-client claude` / `-client codex` のいずれでも translate が起動し、各クライアントの skill 配置レイアウトに展開されることを確認**
 - [ ] **旧フラグ構文 `examtopicsdl -p amazon -s ...` が `fetch` サブコマンドへ後方互換 dispatch される**
-- [ ] README に取得方法 / `config.json` スキーマ / `.env` 配置場所 / サブコマンド一覧 / 管理 UI の使い方が入っている
+- [ ] **migration 003 適用後の DB で UUIDv7 BLOB(16) PK が機能し、`Bun.randomUUIDv7()` / `gofrs/uuid` v5 で生成した ID が両言語で互換 (Go で書いた行を Bun で読める / 逆も)**
+- [ ] **`internal/uuidx` のラウンドトリップ property test が Go/Bun の双方で通る (`encode(decode(x)) == x` を 10000 ランダム値)**
+- [ ] **`/threads/:id` URL に 26 文字 Crockford base32 を渡してアクセスできる (整数 ID へのフォールバックは無し)**
+- [ ] **`examtopicsdl sync snapshot` が `VACUUM INTO` で一貫したスナップショットを出力する**
+- [ ] **3 機ループバック検証 (§3.7.7) が成功: 母艦 → 2 SBC 配布 → 各機で書込 → 母艦合流 → 再配布 → 全機の `attempts` / `explanation_threads` / `explanation_messages` 行数とコンテンツが一致**
+- [ ] **同じ peer.db を 2 回 `sync merge` してもデータが変わらない (idempotency)**
+- [ ] **`config.json` の `hostId` 未設定時に自動生成され、再起動後も同じ値が維持される**
+- [ ] **`sync` 実行前の時計同期チェックで `synchronized: no` の場合に abort し、ヘルプメッセージを出す**
+- [ ] README に取得方法 / `config.json` スキーマ / `.env` 配置場所 / サブコマンド一覧 / 管理 UI の使い方 / **マシン間同期の運用手順 (§3.7.4) と NTP 前提** が入っている
