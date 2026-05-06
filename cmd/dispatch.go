@@ -21,6 +21,7 @@ type subcommand struct {
 
 var subcommands = []subcommand{
 	{"fetch", "Scrape exam pages and write Markdown / SQLite output (legacy flag-style)", nil},
+	{"providers", "List known examtopics provider slugs", runProviders},
 	{"version", "Print version and exit", runVersionCmd},
 }
 
