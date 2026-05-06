@@ -55,16 +55,19 @@ func TestOpen_CreatesAllOwnedTables(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
+	// Open() now applies migration 003 (multi-host sync), so attempts /
+	// explanation_threads / explanation_messages exist with the UUIDv7
+	// BLOB-PK schema alongside the upstream-owned questions / choices /
+	// discussion tables. Pre-migration this test asserted the opposite —
+	// see git history for the legacy ownership boundary.
 	tabs := tablesIn(t, db)
-	for _, want := range []string{"questions", "choices", "discussion"} {
+	for _, want := range []string{
+		"questions", "choices", "discussion",
+		"attempts", "explanation_threads", "explanation_messages",
+		"schema_version",
+	} {
 		if _, ok := tabs[want]; !ok {
 			t.Errorf("expected table %q to exist after Open, tables=%v", want, tabs)
-		}
-	}
-	// Tables we must NOT touch — these are owned by web/db.ts and translate.py.
-	for _, owned := range []string{"attempts", "explanation_threads", "explanation_messages"} {
-		if _, ok := tabs[owned]; ok {
-			t.Errorf("Open should NOT create %q (owned elsewhere); found in fresh DB", owned)
 		}
 	}
 }
