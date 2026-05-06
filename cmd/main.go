@@ -11,6 +11,10 @@ import (
 	"examtopics-downloader/internal/utils"
 )
 
+// version is overridden at build time via -ldflags="-X main.version=$tag"
+// in release.yml; "dev" is the default for un-tagged local builds.
+var version = "dev"
+
 // shouldEmitMarkdown decides whether we should run the legacy Markdown writer
 // path. The default is "yes" (preserves prior behavior). The only case we skip
 // MD is when the user opted into -sqlite without explicitly setting -o, which
@@ -39,7 +43,13 @@ func main() {
 	noCache := flag.Bool("no-cache", false, "Optional argument, set to disable looking through cached data on github")
 	token := flag.String("t", "", "GitHub PAT for cached scrape (env GH_PAT used when flag is empty)")
 	sqlitePath := flag.String("sqlite", "", "Optional path to a SQLite DB. When set, scraped data is written directly into this DB (cache JSON preserves all fields; manual fallback writes a subset).")
+	versionFlag := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Println(version)
+		os.Exit(0)
+	}
 
 	// Fall back to GH_PAT (possibly loaded from .env) when -t is empty.
 	if *token == "" {
