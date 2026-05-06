@@ -1,8 +1,8 @@
 # Portable Multi-Platform Builds (Plan)
 
-Status: 計画段階 (実装前)
+Status: **実装中** — タスク 2 (Go hardening) 完了 / タスク 3 (CLI subcommand 化) 完了 / タスク 4 (Web hardening) 部分完了 (4-A / 4-B / 4-C 済、4-D / 4-E / 4-F / 4-H 残)
 Branch: `chore/portable-builds`
-Last updated: 2026-05-06
+Last updated: 2026-05-06 (実装進捗反映)
 
 ## 1. 目的とスコープ
 
@@ -799,53 +799,68 @@ jobs:
 
 ## 5. 実装タスク (順番)
 
-1. **計画ドキュメント commit** ← 本 PR の最初のコミット (このファイル)。本計画は **2 段階で commit 済み** — (a) 初稿 (`9766af6`)、(b) Bun バイナリ化のブロッカ追記 + マシン間同期 §3.7 追記 (本 commit)。以降の commit は本リスト 2〜11 の各タスクに対応
-2. **Go 側の hardening**:
-   - `go.mod` の Go バージョンと CI の `go-version` を揃える (`stable` 推奨)
-   - `cmd/main.go` に `var version = "dev"` を追加
-   - `internal/config` パッケージ新設 (§3.5 の `Config` / `Load()`)。`hostId` フィールドを必須化 (§3.7.3)、未設定時は `os.Hostname()` + ランダム 4 文字 suffix を生成して書き戻し
-   - `internal/utils/dotenv.go` に `LoadDotEnvAuto()` を追加 (config.json と同じ探索順)
-   - `internal/uuidx` パッケージ新設 (§3.7.2): UUIDv7 生成 (`github.com/google/uuid` v1.6+ — 既存 indirect dep を昇格)、BLOB(16) ⇄ Crockford base32 26 文字の encode/decode、ラウンドトリップ property test
-   - 進捗バー / log 出力を非 TTY で扱いやすい形に整える
-   - `golangci-lint` の `.golangci.yml` 最小設定 (default linters + `errcheck`, `staticcheck`, `govet`)
-3. **Go CLI のサブコマンド化** (§3.6 / §3.7.4):
-   - `cmd/main.go` を dispatcher に書き換え (`fetch` / `quiz` / `translate` / `providers` / `config` / `version` / `sync`)
-   - 旧フラグの後方互換 fallback (`examtopicsdl -p amazon -s ...` を `fetch` 互換扱い)
-   - `internal/quiz` パッケージ (TUI 出題ループ、attempts 永続化 — UUIDv7 を `INSERT` 前に生成)
-   - `internal/translate` パッケージ:
-     - `Client` interface + `gemini` / `claude` / `codex` / `exec` アダプタ
-     - 未訳行の DB 反映ロジック (クライアント非依存)
-   - `internal/skills` パッケージ + `//go:embed` で portable skill 同梱、`Materialize(client)`
-   - `skills/exam-translator.md` を真とし、`go generate` で `.gemini/skills/` と `internal/skills/assets/` へ同期
-   - `.gitignore` から `!.gemini/skills/exam-translator.md` の例外を撤去 (生成物化)
-   - `internal/sync` パッケージ + サブコマンド (§3.7.4):
-     - `sync snapshot -d <db> -o <out>` (`VACUUM INTO` で WAL 整合スナップショット)
-     - `sync merge -d <db> --from <peer.db>` (G-Set + LWW の SQL を ATTACH で実行)
-     - `sync content -d <db> --from <master.db>` (questions/choices/discussion 上書きコピー)
-     - 実行前に `timedatectl` 同期確認 (Linux のみ; Windows では w32time クエリ) — `synchronized: no` なら abort + ヘルプ
-     - 起動時に DB ファイルが WAL 状態 (`-wal`/`-shm` 残存 + 書込中) なら scp 不可警告
-   - migration `003_multihost_sync.sql` を追加 (§3.7.2)。既存 attempts/threads/messages を破棄 + UUIDv7 BLOB スキーマ再作成
-4. **Web 側の hardening**:
-   - `web/src/config.ts` 新設 (§3.5 の Bun 版 `loadConfig`)。`hostId` を `loadConfig()` 経由で読み、INSERT 時に列に反映
-   - `db.ts` の migrations 読込を text import 配列へリファクタ (バイナリ単体動作のため)。新規 `003_multihost_sync.sql` を配列に追加
-   - `db.ts` の `PROJECT_ROOT` を `loadConfig().dataDir` 起点に置換
-   - `db.ts` の PK 関連書き換え (§3.7.2): `Number(r.lastInsertRowid)` を使う `createThread` / `appendMessage` 等を **「INSERT 前に `Bun.randomUUIDv7()` で BLOB(16) を生成して明示渡し」** に変更。`thread_id` / `id` の型を `Uint8Array` (BLOB) に統一
-   - URL ルートの id parser 変更: `/threads/:id` の `:id` を 26 文字 Crockford base32 として decode する helper を追加 (`internal/uuidx` の Bun 移植)
-   - `client/loader.ts` を text import 化 (§2 注意点 6): `thread-live.ts` / `question-live.ts` を `with { type: "text" }` で取り込み、`readFileSync` + `import.meta.dir` 依存を撤去。loader API (`loadClientScript(name)`) は維持し、内部マップで分岐
-   - `agent.ts` の `AGENTS.md` 読込を text import 化 (§2 注意点 7): `loadRulesExcerpt()` を import 値ベースに置換、try/catch フォールバックは撤去
-   - `agent_log.ts` の `PROJECT_ROOT` 算出を `loadConfig().dataDir` 起点に置換 (`AGENT_LOG_DIR` env は引き続き優先)
-   - `package.json` に `format` / `format:check` スクリプト追加 (Bun fmt or Biome)
-   - 翻訳/解説エージェント呼び出しを `examtopicsdl translate` spawn に切替 (Python 版 `tools/translate.py` の依存を将来削除する布石)
-   - `bun build --compile` での smoke build を `bun test` の隣に追加し、上記 fs 撤去の回帰を CI で検出
-5. **Web の取得 UI 追加** (§3.4):
+進捗マーカー: ✅ 完了 / 🟡 部分 / ⏸ 未着手 / ⏭ 意図的後回し
+
+1. ✅ **計画ドキュメント commit** ← 本 PR の最初のコミット (このファイル)。本計画は **3 段階で commit 済み** — (a) 初稿 (`9766af6`)、(b) Bun バイナリ化のブロッカ追記 + マシン間同期 §3.7 追記 (`9b914f2`)、(c) 実装進捗反映 (本 commit)。以降の commit は本リスト 2〜11 の各タスクに対応
+
+2. ✅ **Go 側の hardening** (commits `a0f1044` / `19b0c9b → 845b2e4` / `10bfb40` / `83c964d` / `0d31ba6` / `c617129` / `492aa8b` / `2637f68` / `06b0b30`):
+   - ✅ `go.mod` の Go バージョンと CI の `go-version` を揃える (`stable` 採用、`a0f1044`)
+   - ✅ `cmd/main.go` に `var version = "dev"` 追加 + `-version` フラグで露出 (`a0f1044`)
+   - ✅ `internal/config` パッケージ新設 (§3.5 の `Config` / `Load()`)。`hostId` 自動生成・永続化、forbidden key 検出 + warn 実装。テスト isolation で developer 環境を汚染しない設計 (`845b2e4`)
+   - ✅ `internal/utils/dotenv.go` に `LoadDotEnvAuto()` 追加。`config.UserConfigDir()` を共有してパス解決ロジック重複を回避 (`2637f68`)
+   - ✅ `internal/uuidx` パッケージ新設 (§3.7.2): UUIDv7 (`github.com/google/uuid` v1.6+ 既存 indirect dep を昇格)、BLOB(16) ⇄ Crockford base32 26 文字、10000 サンプルのラウンドトリップ property test (`10bfb40`)
+   - ✅ 進捗バー / log 出力を非 TTY で扱いやすく — `internal/utils/progress.go` の `ProgressBar` interface で TTY なら pb/v3 アニメーション、非 TTY なら 5 秒間隔の log line。`mattn/go-isatty` を direct dep に昇格 (`06b0b30`)
+   - ✅ `.golangci.yml` (v2 schema) + 既存 42 errcheck 警告 fix を 4 commits に分割 (test 系 18 / production close 系 10 / files.go fmt.Fprintf 14)。`internal/utils.WriteErr` 公開で TUI 系の write エラー累積パターンを再利用可能化 (`83c964d`-`492aa8b`)
+   - ✅ ボーナス: 計画書の `gofrs/uuid` → `google/uuid` 整合 (`031f6ce`)
+
+3. ✅ **Go CLI のサブコマンド化** (commits `59d6a4c` / `5819db4` / `44b22c4` / `01370f9` / `1d7bc25` / `f10bc46` / `e96a2f4`):
+   - ✅ `cmd/main.go` を dispatcher 化 — **upstream merge-friendly 設計**: main() の body は upstream のまま保持し、4 行 shim だけ先頭に追加。`cmd/dispatch.go` に subcommand table、各 subcommand は `cmd/<name>.go` 1 ファイル。`fetch` は nil-run 特殊扱いで legacy main body へ fall-through (`59d6a4c`)
+   - ✅ 旧フラグの後方互換 fallback (`examtopicsdl -p amazon -s ...` → main body 直接 / `examtopicsdl fetch -p amazon -s ...` → fetch 特殊扱いで body へ)
+   - ✅ `internal/quiz` パッケージ + `cmd/quiz.go` (TDD red-green、TUI loop with stdin/stdout 注入で完全テスト可能、UUIDv7 を INSERT 前に生成、letter 順序非依存の正誤判定) (`1d7bc25`)
+   - 🟡 `internal/translate` パッケージ + `cmd/translate.go` (`e96a2f4`):
+     - ✅ `Client` 構造体 + 4 テンプレ (gemini / claude / codex / exec) の `KnownClients()`
+     - ✅ `Materialize(client, root)` で portable skill を各クライアントの期待 layout へ書き出し
+     - ✅ `cmd/translate.go` に `-client` / `-dry-run` / `-list-clients` フラグ
+     - ⏸ **未実装**: 各クライアント CLI の実 spawn (vendor ごとの引数規約 + 認証契約が大きいため意図的に分離)
+     - ⏸ **未実装**: 未訳行の DB 反映ロジック (クライアント非依存) — 現状 `tools/translate.py` (Python) が担当
+   - 🟡 portable skill 同梱:
+     - ✅ `internal/translate/assets/exam-translator.md` を `//go:embed` で `SkillMarkdown` として export (`e96a2f4`)
+     - ⏸ **未実装**: `skills/exam-translator.md` (リポジトリルート) を真とし `go generate` で `.gemini/skills/` 等へ同期する仕組み — 現状 `internal/translate/assets/` が事実上の master、`.gemini/skills/` は手動同期
+     - ⏸ **未実装**: `.gitignore` の `!.gemini/skills/exam-translator.md` 例外撤去 (生成物化)
+   - 🟡 `internal/sync` パッケージ + `cmd/sync.go` (`f10bc46`):
+     - ✅ `sync snapshot -d <db> -o <out>` (`VACUUM INTO` で WAL 整合スナップショット)
+     - ✅ `sync merge -d <db> --from <peer.db>` (G-Set + LWW、ATTACH 経由、idempotency テスト済)
+     - ✅ `sync content -d <db> --from <master.db>` (questions/choices/discussion 全置換)
+     - ⏸ **未実装**: `timedatectl` 同期確認 (Linux/Windows) — `synchronized: no` の abort
+     - ⏸ **未実装**: WAL 状態検出 (`-wal`/`-shm` 残存) → scp 不可警告
+   - ✅ migration `003_multihost_sync.sql` (§3.7.2) — `internal/sqlite/migrations/` 配下に配置 (`//go:embed` パッケージ境界制約のため `<repo>/migrations/` ではなく Go パッケージ内)。Web 側は **task 4-E まで未適用** (合意済の暫定方針)。既存 INTEGER-PK スキーマを破棄 + UUIDv7 BLOB へ。Open() で自動適用、5 ケースの TDD 完備 (`01370f9`)
+
+4. 🟡 **Web 側の hardening** (commits `dc94e18` / `82f7aef`):
+   - ✅ `web/src/config.ts` 新設 (`82f7aef`) — `loadConfig()` が `internal/config` (Go) と同じ search path / env override / forbidden key 検出を実装。**hostId 自動生成・永続化は未実装** (4-E の PK 書換と一緒にやる方が破壊範囲を一回で済ませられるため後回し)
+   - ✅ `db.ts` の migrations 読込を text import 配列へ (`dc94e18`) — 001 / 002 を `with { type: "text" }` で埋め込み、static `MIGRATIONS` 配列で管理。**003 はまだ配列に追加していない** (db.ts 全体の PK 書換とセットで 4-E に持ち越し)
+   - ✅ `db.ts` の `PROJECT_ROOT` を `loadConfig().dataDir` 起点に置換 (`82f7aef`)
+   - ⏸ **4-D**: Bun-side UUIDv7 + base32 ヘルパ (`internal/uuidx` の TS 移植) — `Bun.randomUUIDv7()` 利用、bytes ⇄ 26 文字 base32 変換、Go 側との byte-for-byte 互換が必須
+   - ⏸ **4-E**: `db.ts` の PK 関連書き換え (§3.7.2)。`Number(r.lastInsertRowid)` 経路 (`createThread` / `appendMessage` 等) を **「INSERT 前に Uint8Array で UUIDv7 を生成して明示渡し」** に変更。型シグネチャは `id: Uint8Array` で統一。同 commit で migration 003 を web 側 `MIGRATIONS` 配列に追加
+   - ⏸ **4-F**: URL ルートの id parser を 26 文字 Crockford base32 対応に (`/threads/:id`)。views (Thread.tsx 等) の link 生成も追従
+   - ✅ `client/loader.ts` を text import 化 (§2 注意点 6) — `thread-live.ts` / `question-live.ts` を `with { type: "text" }` 取り込み、`@ts-ignore` で TS の "is not a module" を抑制。`readFileSync` + `statSync` + `import.meta.dir` 依存を全撤去 (`dc94e18`)
+   - ✅ `agent.ts` の `AGENTS.md` 読込を text import 化 (§2 注意点 7)。`loadRulesExcerpt` を import 値ベースに置換、try/catch フォールバックは撤去。spawn の cwd 用に `SPAWN_CWD = process.cwd()` を導入 (将来 `loadConfig().dataDir` 経由に) (`dc94e18`)
+   - ✅ `agent_log.ts` の `PROJECT_ROOT` 算出を `loadConfig().logDir` 起点に置換 (`AGENT_LOG_DIR` env は引き続き優先) (`82f7aef`)
+   - ⏭ **4-G**: `package.json` に `format` / `format:check` スクリプト追加 — Bun 1.3.13 時点で `bun fmt` 未提供、Biome / Prettier いずれを採用するかの判断保留 (skipped 暫定)
+   - ⏸ **4-H**: 翻訳/解説エージェント呼び出しを `examtopicsdl translate` spawn に切替 (Python 版 `tools/translate.py` の依存を将来削除する布石) — task 3 の translate spawn 未実装と一体で進める
+   - ⏸ `bun build --compile` smoke を `bun test` の隣に追加し、fs 撤去の回帰を CI で検出 — task 6 (release.yml) で吸収予定。手元検証は完了済 (56 modules / 113 MB native binary)
+
+5. ⏸ **Web の取得 UI 追加** (§3.4):
    - `resolveDownloaderPath()` ヘルパ + `Bun.spawn` 連携 (`examtopicsdl fetch` を呼ぶ)
    - `GET/POST /admin/fetch` ルートと SSE ログストリーム
    - `EXAMTOPICS_ADMIN_TOKEN` 認可
-   - 入力検証 (provider ホワイトリスト + slug regex)
+   - 入力検証 (provider ホワイトリスト + slug regex) — `internal/constants.KnownProviders` を JSON 経由で参照可能に
    - フォーム/状態表示の View (`web/src/views/AdminFetch.tsx`)
-6. **新 workflow** `.github/workflows/release.yml` 追加 (§4)
-7. **既存 workflow** `go-tests.yml` の整理 (release.yml の go-check と重複するため削除 or trigger 限定)
-9. **動作確認**:
+
+6. ⏸ **新 workflow** `.github/workflows/release.yml` 追加 (§4) — Go 4 ターゲット + Bun 3〜4 ターゲットの matrix build
+
+7. ⏸ **既存 workflow** `go-tests.yml` の整理 (release.yml の go-check と重複するため削除 or trigger 限定)
+
+8. ⏸ (元 9) **動作確認**:
    - PR で smoke build が 4+3 ターゲットで通ること
    - 実バイナリで `config.json` 自動探索が機能すること (cwd / バイナリ隣 / `XDG_CONFIG_HOME`)
    - 実バイナリで `.env` 自動探索が機能すること (同上)
@@ -856,8 +871,17 @@ jobs:
    - 同コマンドを `-client claude` / `-client codex` に切り替えても起動できること (skill 配置形式が自動で切り替わること)
    - Windows VM (amd64) で `examtopicsdl.exe fetch -p amazon -exams` が動くこと
    - 旧構文 `examtopicsdl.exe -p amazon -exams` が後方互換で動くこと
-10. **README 更新**: バイナリ取得方法 / `config.json` スキーマ / `.env` 配置場所 / 各サブコマンド / Web 取得 UI の使い方を追加
-11. tag `v0.1.0` を切ってリリース動作を一発確認
+
+9. ⏸ **README 更新**: バイナリ取得方法 / `config.json` スキーマ / `.env` 配置場所 / 各サブコマンド / Web 取得 UI の使い方 / マシン間同期の運用手順 (§3.7.4) と NTP 前提
+
+10. ⏸ tag `v0.1.0` を切ってリリース動作を一発確認
+
+### 5.x 実装で確定したアーキテクチャ判断 (計画起草時点では暫定だったもの)
+
+- **`cmd/` ファイル分割の merge-friendly 設計**: `cmd/main.go` の body には触らず、4 行 shim だけ先頭に追加する形で upstream 互換を維持。新サブコマンドは `cmd/<name>.go` 1 ファイル + `cmd/dispatch.go` の table 1 行追加で済む。upstream が `main.go` の flag-parse 部分を更新しても shim の境界で衝突しない (詳細は `cmd/dispatch.go` の docstring)。
+- **migration 配置**: Go の `//go:embed` がパッケージディレクトリ外を embed できない制約から、Go 側 migration は `internal/sqlite/migrations/` 配下に置く。Web 側は `<repo>/migrations/` に既存の 001 / 002 を残し、text import 化済 (4-A)。**migration 003 は 4-E の PK 書換と同 commit で web 側 MIGRATIONS 配列に追加** (中間状態だと web の INSERT 経路が壊れるため一括変更必須)。
+- **portable skill の master 位置**: 当初計画 (`<repo>/skills/exam-translator.md` + `go generate`) は実装せず、`internal/translate/assets/exam-translator.md` を事実上の master として運用中。`.gemini/skills/exam-translator/SKILL.md` (現在 active な skill) との整合は `Materialize(c, root)` の手動実行で取る。`go generate` 化と `.gitignore` 例外撤去はタスク 9 (動作確認) のあたりで仕上げ予定。
+- **TDD ワークフロー**: タスク 2 の途中から TDD red-green を全箇所で実践 — 失敗するテストを先にコミット可能な状態にしてから green 実装、コミットは green チェックポイント。ラインレベルでは red 状態は履歴に残さず、commit message に "TDD red-green" を明記して意図を伝える。本ブランチで採用、後続タスクも継続。
 
 ## 6. リスクと対策
 
@@ -888,24 +912,26 @@ jobs:
 
 ## 7. 完了条件
 
-- [ ] `release.yml` が main への push で warm に通る
+進捗マーカー: `[x]` 達成 / `[~]` 部分達成 / `[ ]` 未達成
+
+- [ ] `release.yml` が main への push で warm に通る (タスク 6 で実装予定)
 - [ ] tag push 時に Releases ページに 4×Go + 3〜4×Bun バイナリが出る
 - [ ] Linux/Windows どちらかの VM で実バイナリが起動する手動チェック完了
-- [ ] **`bun build --compile` 後の単一バイナリで Web が起動し、(a) `migrations/*.sql`, (b) `AGENTS.md`, (c) `client/*.ts` を一切 FS から読まずに正常動作することを確認 (起動後にバイナリ隣の関連ファイルを全削除しても動くこと)**
-- [ ] **`config.json` / `.env` が cwd / バイナリ隣 / `XDG_CONFIG_HOME` のいずれにあっても拾えることを Go/Bun 双方で確認**
-- [ ] **`config.json` に PAT 系キーが混入したとき warn が出て無視されることを確認**
-- [ ] **Web 管理画面 `/admin/fetch` から `examtopicsdl fetch` を spawn でき、SSE ログが流れ、`<dataDir>/<slug>.db` が生成されることを確認**
-- [ ] **`EXAMTOPICS_ADMIN_TOKEN` 未設定時は 503 が返ることを確認**
-- [ ] **`examtopicsdl quiz` / `translate` がリポジトリ外 (バイナリ単独配置) でも動作する**
-- [ ] **`go generate` 後 `skills/exam-translator.md` を真とし、`.gemini/skills/` と `internal/skills/assets/` が byte 一致 (CI ガード)**
-- [ ] **`-client gemini` / `-client claude` / `-client codex` のいずれでも translate が起動し、各クライアントの skill 配置レイアウトに展開されることを確認**
-- [ ] **旧フラグ構文 `examtopicsdl -p amazon -s ...` が `fetch` サブコマンドへ後方互換 dispatch される**
-- [ ] **migration 003 適用後の DB で UUIDv7 BLOB(16) PK が機能し、`Bun.randomUUIDv7()` / `google/uuid` v1.6+ で生成した ID が両言語で互換 (Go で書いた行を Bun で読める / 逆も)**
-- [ ] **`internal/uuidx` のラウンドトリップ property test が Go/Bun の双方で通る (`encode(decode(x)) == x` を 10000 ランダム値)**
-- [ ] **`/threads/:id` URL に 26 文字 Crockford base32 を渡してアクセスできる (整数 ID へのフォールバックは無し)**
-- [ ] **`examtopicsdl sync snapshot` が `VACUUM INTO` で一貫したスナップショットを出力する**
+- [~] **`bun build --compile` 後の単一バイナリで Web が起動し、(a) `migrations/*.sql`, (b) `AGENTS.md`, (c) `client/*.ts` を一切 FS から読まずに正常動作することを確認** — 手元検証で 56 modules / 113 MB ネイティブバイナリ生成成功 (4-A commit `dc94e18`)。CI 化と「ファイル削除後の起動確認」までは未達
+- [~] **`config.json` / `.env` が cwd / バイナリ隣 / `XDG_CONFIG_HOME` のいずれにあっても拾えることを Go/Bun 双方で確認** — Go 側 `internal/config` + `LoadDotEnvAuto()` で実装 + テスト済 (`845b2e4` / `2637f68`)、Bun 側 `web/src/config.ts` で実装 + テスト済 (`82f7aef`)。実バイナリでのチェックは未達
+- [x] **`config.json` に PAT 系キーが混入したとき warn が出て無視されることを確認** — Go (`845b2e4`) / Bun (`82f7aef`) 双方で `forbiddenKeys` 検出 + ユニットテスト済
+- [ ] **Web 管理画面 `/admin/fetch` から `examtopicsdl fetch` を spawn でき、SSE ログが流れ、`<dataDir>/<slug>.db` が生成されることを確認** (タスク 5 で実装予定)
+- [ ] **`EXAMTOPICS_ADMIN_TOKEN` 未設定時は 503 が返ることを確認** (タスク 5)
+- [ ] **`examtopicsdl quiz` / `translate` がリポジトリ外 (バイナリ単独配置) でも動作する** — quiz は `1d7bc25` で実装済、translate は materialize までで spawn 未実装
+- [ ] **`go generate` 後 `skills/exam-translator.md` を真とし、`.gemini/skills/` と `internal/skills/assets/` が byte 一致 (CI ガード)** — 現状 `internal/translate/assets/exam-translator.md` を事実上の master として使用、`go generate` 化は task 9 (動作確認) で実施
+- [~] **`-client gemini` / `-client claude` / `-client codex` のいずれでも translate が起動し、各クライアントの skill 配置レイアウトに展開されることを確認** — Materialize は 4 client 全てで実装 + テスト済 (`e96a2f4`)、CLI spawn 自体は未実装
+- [x] **旧フラグ構文 `examtopicsdl -p amazon -s ...` が `fetch` サブコマンドへ後方互換 dispatch される** — `cmd/dispatch.go` の dispatcher で実装 + 手動検証済 (`59d6a4c`)
+- [~] **migration 003 適用後の DB で UUIDv7 BLOB(16) PK が機能し、`Bun.randomUUIDv7()` / `google/uuid` v1.6+ で生成した ID が両言語で互換 (Go で書いた行を Bun で読める / 逆も)** — Go 側で migration 003 + UUID INSERT が動作 + テスト済 (`01370f9` / `1d7bc25`)、Bun 側は task 4-D / 4-E で対応予定
+- [~] **`internal/uuidx` のラウンドトリップ property test が Go/Bun の双方で通る (`encode(decode(x)) == x` を 10000 ランダム値)** — Go 側 `internal/uuidx` で 10k 件 round-trip 実装 + 通過 (`10bfb40`)、Bun 側 (task 4-D) は未実装
+- [ ] **`/threads/:id` URL に 26 文字 Crockford base32 を渡してアクセスできる (整数 ID へのフォールバックは無し)** (task 4-F)
+- [x] **`examtopicsdl sync snapshot` が `VACUUM INTO` で一貫したスナップショットを出力する** — `internal/sync` で実装 + テスト済 (`f10bc46`)
 - [ ] **3 機ループバック検証 (§3.7.7) が成功: 母艦 → 2 SBC 配布 → 各機で書込 → 母艦合流 → 再配布 → 全機の `attempts` / `explanation_threads` / `explanation_messages` 行数とコンテンツが一致**
-- [ ] **同じ peer.db を 2 回 `sync merge` してもデータが変わらない (idempotency)**
-- [ ] **`config.json` の `hostId` 未設定時に自動生成され、再起動後も同じ値が維持される**
-- [ ] **`sync` 実行前の時計同期チェックで `synchronized: no` の場合に abort し、ヘルプメッセージを出す**
-- [ ] README に取得方法 / `config.json` スキーマ / `.env` 配置場所 / サブコマンド一覧 / 管理 UI の使い方 / **マシン間同期の運用手順 (§3.7.4) と NTP 前提** が入っている
+- [x] **同じ peer.db を 2 回 `sync merge` してもデータが変わらない (idempotency)** — `internal/sync.Merge` のテストで検証済 (`f10bc46`)
+- [~] **`config.json` の `hostId` 未設定時に自動生成され、再起動後も同じ値が維持される** — Go 側で完全実装 + テスト済 (`845b2e4`)、Bun 側 (task 4-D / 4-E) は未実装。両側で同じ id が見える状態を作る必要あり
+- [ ] **`sync` 実行前の時計同期チェックで `synchronized: no` の場合に abort し、ヘルプメッセージを出す** (task 3 残: timedatectl 検査)
+- [ ] README に取得方法 / `config.json` スキーマ / `.env` 配置場所 / サブコマンド一覧 / 管理 UI の使い方 / **マシン間同期の運用手順 (§3.7.4) と NTP 前提** が入っている (タスク 9)
