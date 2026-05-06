@@ -48,3 +48,30 @@ func TestRunTranslateTo_UnknownClientReturnsUsage(t *testing.T) {
 		t.Errorf("missing usage hint\n%s", buf.String())
 	}
 }
+
+func TestRunTranslateTo_ExplainRequiresDBAndTID(t *testing.T) {
+	var buf bytes.Buffer
+	exit := runTranslateTo(&buf, []string{"explain"})
+	if exit != 2 {
+		t.Errorf("exit = %d, want 2", exit)
+	}
+	if !strings.Contains(buf.String(), "-db and -tid are required") {
+		t.Errorf("missing usage hint\n%s", buf.String())
+	}
+}
+
+func TestRunTranslateTo_ExplainUnknownClientReturnsUsage(t *testing.T) {
+	var buf bytes.Buffer
+	exit := runTranslateTo(&buf, []string{
+		"explain",
+		"-db", filepath.Join(t.TempDir(), "explain.db"),
+		"-tid", "01HZX5K2E8VCQK00000000000Q",
+		"-client", "nope",
+	})
+	if exit != 2 {
+		t.Errorf("exit = %d, want 2\n%s", exit, buf.String())
+	}
+	if !strings.Contains(buf.String(), "unknown client") {
+		t.Errorf("missing usage hint\n%s", buf.String())
+	}
+}
