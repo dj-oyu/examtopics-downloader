@@ -5,8 +5,10 @@ go 1.25.0
 require (
 	github.com/PuerkitoBio/goquery v1.11.0
 	github.com/cheggaaa/pb/v3 v3.1.7
+	github.com/google/uuid v1.6.0
 	github.com/mandolyte/mdtopdf v1.5.3
 	github.com/yuin/goldmark v1.7.13
+	modernc.org/sqlite v1.50.0
 )
 
 require (
@@ -19,7 +21,6 @@ require (
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.12 // indirect
 	github.com/go-pdf/fpdf v0.9.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/jessp01/gohighlight v0.21.4 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
@@ -36,5 +37,4 @@ require (
 	modernc.org/libc v1.72.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.50.0 // indirect
 )
