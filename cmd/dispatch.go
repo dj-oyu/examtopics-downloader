@@ -20,6 +20,7 @@ type subcommand struct {
 }
 
 var subcommands = []subcommand{
+	{"config", "Print the resolved runtime configuration as JSON", runConfig},
 	{"fetch", "Scrape exam pages and write Markdown / SQLite output (legacy flag-style)", nil},
 	{"providers", "List known examtopics provider slugs", runProviders},
 	{"version", "Print version and exit", runVersionCmd},
