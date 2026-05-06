@@ -93,28 +93,14 @@ var addedColumns = []struct {
 // Open opens (creating if necessary) a SQLite DB at path, applies the canonical
 // schema, and runs idempotent ALTER TABLE migrations to bring legacy DBs in
 // line with the current shape. Safe to call repeatedly on the same file.
+//
+// Open uses a fallback host id derived from os.Hostname() and does not take
+// a pre-migration backup. Production CLI entry points that have config in
+// scope should call OpenWith with an explicit HostID and Backup=true so
+// migration 003 stamps rows with a stable id and a .pre-003.bak snapshot
+// is left on disk before any destructive migration runs.
 func Open(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite open %s: %w", path, err)
-	}
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("enable fk: %w", err)
-	}
-	if _, err := db.Exec(SchemaDDL); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("apply schema: %w", err)
-	}
-	if err := migrateQuestionsAddColumns(db); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := ApplyMigrations(db); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("apply migrations: %w", err)
-	}
-	return db, nil
+	return OpenWith(path, OpenOpts{})
 }
 
 func migrateQuestionsAddColumns(db *sql.DB) error {

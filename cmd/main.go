@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 
+	"examtopics-downloader/internal/config"
 	"examtopics-downloader/internal/fetch"
 	"examtopics-downloader/internal/sqlite"
 	"examtopics-downloader/internal/utils"
@@ -14,6 +15,20 @@ import (
 // version is overridden at build time via -ldflags="-X main.version=$tag"
 // in release.yml; "dev" is the default for un-tagged local builds.
 var version = "dev"
+
+// fetchOpenOpts loads the runtime config and returns the OpenOpts used
+// by runSQLiteMode. Backup=true takes a .pre-003.bak snapshot before
+// migration 003 runs; HostID stamps preserved rows with the local
+// machine's identifier. A config-load error degrades to a backup-only
+// open so a user without a config.json can still scrape — preservation
+// rows fall back to a hostname-derived id in that case.
+func fetchOpenOpts() sqlite.OpenOpts {
+	cfg, err := config.Load()
+	if err != nil {
+		return sqlite.OpenOpts{Backup: true}
+	}
+	return sqlite.OpenOpts{HostID: cfg.HostID, Backup: true}
+}
 
 // shouldEmitMarkdown decides whether we should run the legacy Markdown writer
 // path. The default is "yes" (preserves prior behavior). The only case we skip
@@ -127,7 +142,7 @@ func main() {
 // we surface the silent "0 matches" cases (bad -s grep, GitHub 1000-listing
 // cap miss without manual hits).
 func runSQLiteMode(path, provider, grep, token string, noCache, saveUrls bool) error {
-	db, err := sqlite.Open(path)
+	db, err := sqlite.OpenWith(path, fetchOpenOpts())
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}

@@ -6,10 +6,26 @@ import (
 	"io"
 	"os"
 
+	"examtopics-downloader/internal/config"
 	"examtopics-downloader/internal/sqlite"
 	syncpkg "examtopics-downloader/internal/sync"
 	"examtopics-downloader/internal/utils"
 )
+
+// syncOpenOpts builds the sqlite.OpenOpts used by sync subcommands that
+// open a destination DB. Loading config gives us a stable hostID to
+// stamp into rows preserved across migration 003; the .pre-003.bak
+// snapshot is requested so a v2 → v3 transition leaves an intact copy
+// behind. A config-load error degrades to the empty-opts default
+// rather than aborting the merge — sync against a fresh DB shouldn't
+// hard-require a config file.
+func syncOpenOpts() sqlite.OpenOpts {
+	cfg, err := config.Load()
+	if err != nil {
+		return sqlite.OpenOpts{Backup: true}
+	}
+	return sqlite.OpenOpts{HostID: cfg.HostID, Backup: true}
+}
 
 // runSync implements `examtopicsdl sync <snapshot|merge|content>`. The
 // outer subcommand routes the second positional word to one of three
@@ -73,7 +89,7 @@ func runSyncMerge(out io.Writer, args []string) int {
 		w.Println("sync merge: -d and --from are required")
 		return 2
 	}
-	db, err := sqlite.Open(*dst)
+	db, err := sqlite.OpenWith(*dst, syncOpenOpts())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sync merge: open %s: %v\n", *dst, err)
 		return 1
@@ -100,7 +116,7 @@ func runSyncContent(out io.Writer, args []string) int {
 		w.Println("sync content: -d and --from are required")
 		return 2
 	}
-	db, err := sqlite.Open(*dst)
+	db, err := sqlite.OpenWith(*dst, syncOpenOpts())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sync content: open %s: %v\n", *dst, err)
 		return 1

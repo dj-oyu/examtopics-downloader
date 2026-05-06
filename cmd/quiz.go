@@ -44,7 +44,7 @@ func runQuizTo(in io.Reader, out io.Writer, hostID string, args []string) int {
 		w.Println("quiz: -db is required")
 		return 2
 	}
-	db, err := sqlite.Open(*dbPath)
+	db, err := sqlite.OpenWith(*dbPath, sqlite.OpenOpts{HostID: hostID, Backup: true})
 	if err != nil {
 		w.Printf("quiz: open %s: %v\n", *dbPath, err)
 		return 1

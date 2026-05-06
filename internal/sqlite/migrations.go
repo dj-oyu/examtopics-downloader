@@ -66,7 +66,23 @@ func loadMigrations() ([]migration, error) {
 // runner skips already-applied versions. Each migration runs inside its own
 // transaction with foreign keys disabled so 12-step table reconstruction
 // scripts can drop and recreate parents without dangling FKs.
+//
+// Use ApplyMigrationsForHost when running against a DB that may carry
+// legacy v2 multihost rows that should be preserved through the v3
+// migration with a particular host_id stamp. ApplyMigrations defaults
+// the host_id to a hostname-derived fallback for callers that don't
+// have config in scope (typically tests).
 func ApplyMigrations(db *sql.DB) error {
+	return ApplyMigrationsForHost(db, fallbackHostID())
+}
+
+// ApplyMigrationsForHost is the variant used by Open* paths that have
+// loaded config and know the canonical host_id. The id is stamped into
+// rows preserved from the legacy v2 schema during migration 003.
+func ApplyMigrationsForHost(db *sql.DB, hostID string) error {
+	if hostID == "" {
+		hostID = fallbackHostID()
+	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
 		version INTEGER PRIMARY KEY,
 		name TEXT NOT NULL,
@@ -89,7 +105,7 @@ func ApplyMigrations(db *sql.DB) error {
 		if _, ok := applied[m.version]; ok {
 			continue
 		}
-		if err := applyOne(db, m); err != nil {
+		if err := applyOne(db, m, hostID); err != nil {
 			return fmt.Errorf("migration %03d_%s: %w", m.version, m.name, err)
 		}
 	}
@@ -117,7 +133,14 @@ func loadAppliedVersions(db *sql.DB) (map[int]struct{}, error) {
 // sequences that affect FK relationships can complete cleanly. The
 // schema_version row is inserted in the same transaction so a partial
 // migration cannot leave the version marker out of sync with the schema.
-func applyOne(db *sql.DB, m migration) error {
+//
+// Migration 003 (multihost sync) gets a special wrap: legacy v2 rows
+// are captured before the SQL drops them and reinserted with fresh
+// UUIDv7 ids and host_id = the supplied hostID after the new tables
+// exist, all in the same transaction. captureLegacyV2 / restoreLegacyV2
+// live in preserve_v3.go and are no-ops when there is nothing to
+// migrate (fresh DB, or already at v3).
+func applyOne(db *sql.DB, m migration, hostID string) error {
 	if _, err := db.Exec("PRAGMA foreign_keys = OFF"); err != nil {
 		return fmt.Errorf("disable fk: %w", err)
 	}
@@ -127,10 +150,28 @@ func applyOne(db *sql.DB, m migration) error {
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
 	}
+
+	var captured *capturedV2
+	if m.version == 3 {
+		captured, err = captureLegacyV2(tx)
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("capture legacy v2: %w", err)
+		}
+	}
+
 	if _, err := tx.Exec(m.sql); err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("exec script: %w", err)
 	}
+
+	if m.version == 3 && captured != nil {
+		if err := restoreLegacyV2(tx, captured, hostID); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("restore legacy v2: %w", err)
+		}
+	}
+
 	if _, err := tx.Exec("INSERT INTO schema_version(version, name) VALUES(?, ?)", m.version, m.name); err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("record version: %w", err)
