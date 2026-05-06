@@ -25,6 +25,7 @@ var subcommands = []subcommand{
 	{"providers", "List known examtopics provider slugs", runProviders},
 	{"quiz", "Walk through exam questions interactively and record attempts", runQuiz},
 	{"sync", "Multi-host DB merge: snapshot / merge / content", runSync},
+	{"translate", "Materialize the exam-translator skill into the chosen LLM CLI's layout", runTranslate},
 	{"version", "Print version and exit", runVersionCmd},
 }
 
