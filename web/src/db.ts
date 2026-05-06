@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
-import { readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { hostname } from "node:os";
 import { resolve, basename, sep } from "node:path";
 // Migration SQL is embedded at build time so the compiled Bun binary
 // does not depend on a `migrations/` directory next to the executable
@@ -8,7 +9,12 @@ import { resolve, basename, sep } from "node:path";
 // version order.
 import sql001 from "../../migrations/001_explanation_messages_grounding.sql" with { type: "text" };
 import sql002 from "../../migrations/002_thread_agent_session.sql" with { type: "text" };
+// Migration 003 lives next to the Go embed so both runtimes share a
+// single authoritative SQL file. The Bun text import is just another
+// view onto the same bytes.
+import sql003 from "../../internal/sqlite/migrations/003_multihost_sync.sql" with { type: "text" };
 import { loadConfig } from "./config";
+import * as uuidx from "./uuidx";
 
 // dataDir is the directory we treat as the source of *.db files, and
 // the boundary every slug must stay within (path-traversal guard).
@@ -24,7 +30,39 @@ type Migration = { version: number; name: string; sql: string };
 const MIGRATIONS: Migration[] = [
   { version: 1, name: "001_explanation_messages_grounding", sql: sql001 },
   { version: 2, name: "002_thread_agent_session", sql: sql002 },
+  { version: 3, name: "003_multihost_sync", sql: sql003 },
 ];
+
+// Stable host id for rows this Bun process writes. Falls back to a
+// hostname-derived string when the loaded config doesn't carry one
+// (e.g. before any Go CLI invocation has persisted a hostId for the
+// machine). Persisting from the Bun side is intentionally deferred to
+// the Go CLI — see the comment in config.ts.
+let cachedHostId: string | null = null;
+function hostId(): string {
+  if (cachedHostId !== null) return cachedHostId;
+  const cfg = loadConfig();
+  let id = cfg.hostId;
+  if (!id) {
+    const raw = (hostname() || "host").toLowerCase();
+    let cleaned = "";
+    for (const ch of raw) {
+      if (
+        (ch >= "a" && ch <= "z") ||
+        (ch >= "0" && ch <= "9") ||
+        ch === "-" ||
+        ch === "_"
+      ) {
+        cleaned += ch;
+      }
+    }
+    if (!cleaned) cleaned = "host";
+    if (cleaned.length > 32) cleaned = cleaned.slice(0, 32);
+    id = `${cleaned}-fallback`;
+  }
+  cachedHostId = id;
+  return id;
+}
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS attempts (
@@ -79,6 +117,14 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_discussion_qid ON discussion(question_id);
 `;
 
+// SCHEMA above creates the v2 INTEGER-PK forms of the multihost tables
+// for fresh DBs so migrations 001 / 002 (which 12-step-reconstruct
+// explanation_messages and ALTER explanation_threads) have something
+// to operate on. Migration 003 then drops and recreates those tables
+// with the v3 BLOB-PK shape; preservation hooks (captureLegacyV2 +
+// restoreLegacyV2) carry any rows across with freshly minted UUIDv7
+// ids and the host_id stamp.
+
 const cache = new Map<string, Database>();
 
 const SCHEMA_VERSION_DDL = `
@@ -88,6 +134,151 @@ const SCHEMA_VERSION_DDL = `
     applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 `;
+
+// --- Multi-host preservation ---------------------------------------------
+
+type V2Attempt = {
+  question_id: number;
+  selected: string;
+  is_correct: number;
+  attempted_at: string | null;
+};
+type V2Thread = {
+  id: number;
+  question_id: number;
+  status: string;
+  created_at: string;
+  closed_at: string | null;
+  agent_session_id: string | null;
+};
+type V2Message = {
+  id: number;
+  thread_id: number;
+  role: string;
+  author: string | null;
+  content: string;
+  reason_code: string | null;
+  citations: string | null;
+  translation_diff: string | null;
+  created_at: string;
+};
+type CapturedV2 = {
+  attempts: V2Attempt[];
+  threads: V2Thread[];
+  messages: V2Message[];
+};
+
+function hasV2Schema(db: Database, table: string): boolean {
+  const cols = db
+    .query<{ name: string }, [string]>("SELECT name FROM pragma_table_info(?)")
+    .all(table);
+  if (cols.length === 0) return false;
+  return !cols.some((c) => c.name === "host_id");
+}
+
+function captureLegacyV2(db: Database): CapturedV2 {
+  const c: CapturedV2 = { attempts: [], threads: [], messages: [] };
+  if (hasV2Schema(db, "attempts")) {
+    c.attempts = db
+      .query<V2Attempt, []>(
+        "SELECT question_id, selected, is_correct, attempted_at FROM attempts"
+      )
+      .all();
+  }
+  if (hasV2Schema(db, "explanation_threads")) {
+    c.threads = db
+      .query<V2Thread, []>(
+        "SELECT id, question_id, status, created_at, closed_at, agent_session_id FROM explanation_threads"
+      )
+      .all();
+  }
+  if (hasV2Schema(db, "explanation_messages")) {
+    c.messages = db
+      .query<V2Message, []>(
+        "SELECT id, thread_id, role, author, content, reason_code, citations, translation_diff, created_at FROM explanation_messages"
+      )
+      .all();
+  }
+  return c;
+}
+
+function restoreLegacyV2(db: Database, c: CapturedV2, host: string): void {
+  if (!host) throw new Error("preserve v3: hostId must not be empty");
+  // Insert threads first so the message FK targets exist. The int → BLOB
+  // mapping is the only reason we can't preserve threads + messages in
+  // independent passes.
+  const threadIdMap = new Map<number, Uint8Array>();
+  for (const t of c.threads) {
+    const id = uuidx.newUuidV7();
+    threadIdMap.set(t.id, id);
+    const updatedAt =
+      t.closed_at && t.closed_at > t.created_at ? t.closed_at : t.created_at;
+    db.run(
+      `INSERT INTO explanation_threads
+         (id, question_id, status, agent_session_id, created_at, closed_at, updated_at, host_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        t.question_id,
+        t.status,
+        t.agent_session_id,
+        t.created_at,
+        t.closed_at,
+        updatedAt,
+        host,
+      ]
+    );
+  }
+  for (const a of c.attempts) {
+    const id = uuidx.newUuidV7();
+    const ts = a.attempted_at && a.attempted_at !== ""
+      ? a.attempted_at
+      : new Date().toISOString();
+    db.run(
+      `INSERT INTO attempts (id, question_id, selected, is_correct, attempted_at, host_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [id, a.question_id, a.selected, a.is_correct, ts, host]
+    );
+  }
+  for (const m of c.messages) {
+    const newTid = threadIdMap.get(m.thread_id);
+    if (!newTid) continue;
+    const id = uuidx.newUuidV7();
+    db.run(
+      `INSERT INTO explanation_messages
+         (id, thread_id, role, author, content, reason_code, citations, translation_diff, created_at, host_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        newTid,
+        m.role,
+        m.author,
+        m.content,
+        m.reason_code,
+        m.citations,
+        m.translation_diff,
+        m.created_at,
+        host,
+      ]
+    );
+  }
+}
+
+function backupBeforeV3(db: Database, path: string): void {
+  // schema_version may not exist yet on a freshly-opened legacy DB.
+  db.exec(SCHEMA_VERSION_DDL);
+  const v3 = db
+    .query<{ n: number }, []>(
+      "SELECT COUNT(*) AS n FROM schema_version WHERE version = 3"
+    )
+    .get();
+  if (v3 && v3.n > 0) return;
+  const bak = path + ".pre-003.bak";
+  if (existsSync(bak)) return;
+  // VACUUM INTO writes a consistent copy regardless of WAL state.
+  // Single quotes are escaped per SQL literal rules.
+  db.exec(`VACUUM INTO '${bak.replace(/'/g, "''")}'`);
+}
 
 function applyPendingMigrations(db: Database): void {
   db.exec(SCHEMA_VERSION_DDL);
@@ -102,7 +293,14 @@ function applyPendingMigrations(db: Database): void {
     db.exec("PRAGMA foreign_keys = OFF");
     try {
       db.exec("BEGIN");
+      let captured: CapturedV2 | null = null;
+      if (m.version === 3) {
+        captured = captureLegacyV2(db);
+      }
       db.exec(m.sql);
+      if (m.version === 3 && captured) {
+        restoreLegacyV2(db, captured, hostId());
+      }
       db.run("INSERT INTO schema_version(version, name) VALUES (?, ?)", [
         m.version,
         m.name,
@@ -163,10 +361,15 @@ export function openDb(slug: string): Database {
   }
   d = new Database(path);
   d.exec(SCHEMA);
+  // Backup before any v2 → v3 migration so the destructive 003 has a
+  // safety net even if its preservation step has a latent bug.
+  backupBeforeV3(d, path);
   applyPendingMigrations(d);
   cache.set(slug, d);
   return d;
 }
+
+// --- Public types ---------------------------------------------------------
 
 export type ExamSummary = {
   slug: string;
@@ -178,6 +381,152 @@ export type ExamSummary = {
   open_threads: number;
   awaiting_agent: number;
 };
+
+export type Question = {
+  id: number;
+  exam: string;
+  topic: number;
+  question_number: number;
+  question_text: string;
+  question_text_ja: string | null;
+  suggested_answer: string;
+  confirmed_answer: string | null;
+  explanation_ja: string | null;
+  url: string | null;
+  comments: string | null;
+};
+
+export type Choice = {
+  question_id: number;
+  label: string;
+  text: string;
+  text_ja: string | null;
+};
+
+export type QuestionListRow = Question & { last_correct: number | null };
+
+export type Attempt = {
+  selected: string;
+  is_correct: number;
+  attempted_at: string;
+};
+
+export type Progress = { total: number; answered: number; correct: number };
+
+export type QuestionDetail = {
+  q: Question;
+  choices: Choice[];
+  attempts: Attempt[];
+  prevId: number | null;
+  nextId: number | null;
+};
+
+// Thread / Message ids are 26-char Crockford base32 (UUIDv7 BLOB
+// encoded by uuidx.encode). Using strings instead of Uint8Array at
+// the public boundary keeps URLs and HTML attributes straightforward;
+// the SQL layer below this file translates to/from BLOB at the call
+// site using uuidx.decode.
+
+export type Thread = {
+  id: string;
+  question_id: number;
+  status: "open" | "resolved" | "dismissed";
+  created_at: string;
+  closed_at: string | null;
+  agent_session_id: string | null;
+};
+
+export type ReasonCode =
+  | "comprehension"
+  | "spec"
+  | "ambiguous"
+  | "translation";
+
+export type Citation = { url: string; title?: string };
+
+export type TranslationDiff = {
+  before: {
+    question_text_ja?: string | null;
+    explanation_ja?: string | null;
+    choices_ja?: Record<string, string | null>;
+  };
+  after: {
+    question_text_ja?: string;
+    explanation_ja?: string;
+    choices_ja?: Record<string, string>;
+  };
+};
+
+export type Message = {
+  id: string;
+  thread_id: string;
+  role: "user" | "agent";
+  author: string | null;
+  content: string;
+  reason_code: ReasonCode | null;
+  citations: string | null;
+  translation_diff: string | null;
+  created_at: string;
+};
+
+export type ThreadWithMessages = Thread & { messages: Message[] };
+
+export type ThreadListRow = Thread & {
+  exam: string;
+  question_number: number;
+  question_text_ja: string | null;
+  question_text: string;
+  last_role: "user" | "agent" | null;
+  last_content: string | null;
+  last_at: string | null;
+  message_count: number;
+};
+
+// Internal row shapes — the BLOB columns come back as Uint8Array
+// (Buffer instances in Bun, which extend Uint8Array). Mappers below
+// convert to the public string-id types above.
+type ThreadRow = Omit<Thread, "id"> & { id: Uint8Array };
+type MessageRow = Omit<Message, "id" | "thread_id"> & {
+  id: Uint8Array;
+  thread_id: Uint8Array;
+};
+
+function toThread(r: ThreadRow): Thread {
+  return { ...r, id: uuidx.encode(r.id) };
+}
+function toThreadWithMessages(
+  r: ThreadRow,
+  msgs: MessageRow[]
+): ThreadWithMessages {
+  return { ...toThread(r), messages: msgs.map(toMessage) };
+}
+function toMessage(r: MessageRow): Message {
+  return {
+    ...r,
+    id: uuidx.encode(r.id),
+    thread_id: uuidx.encode(r.thread_id),
+  };
+}
+
+function decodeId(s: string): Uint8Array {
+  return uuidx.decode(s);
+}
+
+export function parseCitations(json: string | null): Citation[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (c): c is Citation =>
+        c && typeof c === "object" && typeof c.url === "string"
+    );
+  } catch {
+    return [];
+  }
+}
+
+const sortLetters = (s: string) => s.split("").sort().join("");
 
 export function discoverExams(): ExamSummary[] {
   let files: string[];
@@ -254,47 +603,6 @@ export function discoverExams(): ExamSummary[] {
   return out;
 }
 
-export type Question = {
-  id: number;
-  exam: string;
-  topic: number;
-  question_number: number;
-  question_text: string;
-  question_text_ja: string | null;
-  suggested_answer: string;
-  confirmed_answer: string | null;
-  explanation_ja: string | null;
-  url: string | null;
-  comments: string | null;
-};
-
-export type Choice = {
-  question_id: number;
-  label: string;
-  text: string;
-  text_ja: string | null;
-};
-
-export type QuestionListRow = Question & { last_correct: number | null };
-
-export type Attempt = {
-  selected: string;
-  is_correct: number;
-  attempted_at: string;
-};
-
-export type Progress = { total: number; answered: number; correct: number };
-
-export type QuestionDetail = {
-  q: Question;
-  choices: Choice[];
-  attempts: Attempt[];
-  prevId: number | null;
-  nextId: number | null;
-};
-
-const sortLetters = (s: string) => s.split("").sort().join("");
-
 export function listQuestions(slug: string): QuestionListRow[] {
   const db = openDb(slug);
   return db
@@ -342,12 +650,19 @@ export function getQuestion(slug: string, id: number): QuestionDetail | null {
   };
 }
 
-export function recordAttempt(slug: string, qid: number, selected: string, correctAnswer: string) {
+export function recordAttempt(
+  slug: string,
+  qid: number,
+  selected: string,
+  correctAnswer: string
+): boolean {
   const db = openDb(slug);
   const isCorrect = sortLetters(selected) === sortLetters(correctAnswer) ? 1 : 0;
+  const id = uuidx.newUuidV7();
+  const ts = new Date().toISOString();
   db.run(
-    "INSERT INTO attempts(question_id, selected, is_correct) VALUES(?,?,?)",
-    [qid, selected, isCorrect]
+    "INSERT INTO attempts(id, question_id, selected, is_correct, attempted_at, host_id) VALUES(?,?,?,?,?,?)",
+    [id, qid, selected, isCorrect, ts, hostId()]
   );
   return isCorrect === 1;
 }
@@ -386,75 +701,6 @@ export function progress(slug: string): Progress {
   return { total, answered, correct };
 }
 
-export type Thread = {
-  id: number;
-  question_id: number;
-  status: "open" | "resolved" | "dismissed";
-  created_at: string;
-  closed_at: string | null;
-  agent_session_id: string | null;
-};
-
-export type ReasonCode =
-  | "comprehension"
-  | "spec"
-  | "ambiguous"
-  | "translation";
-
-export type Citation = { url: string; title?: string };
-
-export function parseCitations(json: string | null): Citation[] {
-  if (!json) return [];
-  try {
-    const parsed = JSON.parse(json);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (c): c is Citation =>
-        c && typeof c === "object" && typeof c.url === "string"
-    );
-  } catch {
-    return [];
-  }
-}
-
-export type TranslationDiff = {
-  before: {
-    question_text_ja?: string | null;
-    explanation_ja?: string | null;
-    choices_ja?: Record<string, string | null>;
-  };
-  after: {
-    question_text_ja?: string;
-    explanation_ja?: string;
-    choices_ja?: Record<string, string>;
-  };
-};
-
-export type Message = {
-  id: number;
-  thread_id: number;
-  role: "user" | "agent";
-  author: string | null;
-  content: string;
-  reason_code: ReasonCode | null;
-  citations: string | null;
-  translation_diff: string | null;
-  created_at: string;
-};
-
-export type ThreadWithMessages = Thread & { messages: Message[] };
-
-export type ThreadListRow = Thread & {
-  exam: string;
-  question_number: number;
-  question_text_ja: string | null;
-  question_text: string;
-  last_role: "user" | "agent" | null;
-  last_content: string | null;
-  last_at: string | null;
-  message_count: number;
-};
-
 const lastMessageJoin = `
   LEFT JOIN (
     SELECT thread_id, role, content, created_at,
@@ -463,87 +709,127 @@ const lastMessageJoin = `
   ) lm ON lm.thread_id = t.id AND lm.rn = 1
 `;
 
-export function getOpenThread(slug: string, qid: number): ThreadWithMessages | null {
+export function getOpenThread(
+  slug: string,
+  qid: number
+): ThreadWithMessages | null {
   const db = openDb(slug);
   const t = db
-    .query<Thread, [number]>(
+    .query<ThreadRow, [number]>(
       "SELECT * FROM explanation_threads WHERE question_id = ? AND status = 'open' " +
         "ORDER BY id DESC LIMIT 1"
     )
     .get(qid);
   if (!t) return null;
   const messages = db
-    .query<Message, [number]>(
+    .query<MessageRow, [Uint8Array]>(
       "SELECT * FROM explanation_messages WHERE thread_id = ? ORDER BY id ASC"
     )
     .all(t.id);
-  return { ...t, messages };
+  return toThreadWithMessages(t, messages);
 }
 
-export function getThread(slug: string, id: number): ThreadWithMessages | null {
+export function getThread(
+  slug: string,
+  id: string
+): ThreadWithMessages | null {
   const db = openDb(slug);
+  const idBytes = decodeId(id);
   const t = db
-    .query<Thread, [number]>("SELECT * FROM explanation_threads WHERE id = ?")
-    .get(id);
+    .query<ThreadRow, [Uint8Array]>(
+      "SELECT * FROM explanation_threads WHERE id = ?"
+    )
+    .get(idBytes);
   if (!t) return null;
   const messages = db
-    .query<Message, [number]>(
+    .query<MessageRow, [Uint8Array]>(
       "SELECT * FROM explanation_messages WHERE thread_id = ? ORDER BY id ASC"
     )
     .all(t.id);
-  return { ...t, messages };
+  return toThreadWithMessages(t, messages);
 }
 
-export function createThread(slug: string, qid: number, firstMessage: string, author: string | null = null) {
+export function createThread(
+  slug: string,
+  qid: number,
+  firstMessage: string,
+  author: string | null = null
+): string {
   const db = openDb(slug);
-  const tx = db.transaction((qid: number, content: string, author: string | null) => {
-    const r = db.run(
-      "INSERT INTO explanation_threads(question_id) VALUES(?)",
-      [qid]
-    );
-    const tid = Number(r.lastInsertRowid);
+  const tidBytes = uuidx.newUuidV7();
+  const midBytes = uuidx.newUuidV7();
+  const ts = new Date().toISOString();
+  const host = hostId();
+  const tx = db.transaction(() => {
     db.run(
-      "INSERT INTO explanation_messages(thread_id, role, author, content) VALUES(?,?,?,?)",
-      [tid, "user", author, content]
+      "INSERT INTO explanation_threads(id, question_id, status, created_at, updated_at, host_id) VALUES(?,?,?,?,?,?)",
+      [tidBytes, qid, "open", ts, ts, host]
     );
-    return tid;
+    db.run(
+      "INSERT INTO explanation_messages(id, thread_id, role, author, content, created_at, host_id) VALUES(?,?,?,?,?,?,?)",
+      [midBytes, tidBytes, "user", author, firstMessage, ts, host]
+    );
   });
-  return tx(qid, firstMessage, author);
+  tx();
+  return uuidx.encode(tidBytes);
 }
 
 export function appendMessage(
   slug: string,
-  threadId: number,
+  threadId: string,
   role: "user" | "agent",
   content: string,
   author: string | null = null
 ): Message | null {
   const db = openDb(slug);
+  const tidBytes = decodeId(threadId);
   const t = db
-    .query<{ status: string }, [number]>(
+    .query<{ status: string }, [Uint8Array]>(
       "SELECT status FROM explanation_threads WHERE id = ?"
     )
-    .get(threadId);
+    .get(tidBytes);
   if (!t || t.status !== "open") return null;
-  const r = db.run(
-    "INSERT INTO explanation_messages(thread_id, role, author, content) VALUES(?,?,?,?)",
-    [threadId, role, author, content]
-  );
-  return db
-    .query<Message, [number]>("SELECT * FROM explanation_messages WHERE id = ?")
-    .get(Number(r.lastInsertRowid));
+  const midBytes = uuidx.newUuidV7();
+  const ts = new Date().toISOString();
+  const host = hostId();
+  const tx = db.transaction(() => {
+    db.run(
+      "INSERT INTO explanation_messages(id, thread_id, role, author, content, created_at, host_id) VALUES(?,?,?,?,?,?,?)",
+      [midBytes, tidBytes, role, author, content, ts, host]
+    );
+    db.run(
+      "UPDATE explanation_threads SET updated_at = ? WHERE id = ?",
+      [ts, tidBytes]
+    );
+  });
+  tx();
+  const row = db
+    .query<MessageRow, [Uint8Array]>(
+      "SELECT * FROM explanation_messages WHERE id = ?"
+    )
+    .get(midBytes);
+  return row ? toMessage(row) : null;
 }
 
-export function closeThread(slug: string, id: number, status: "resolved" | "dismissed") {
+export function closeThread(
+  slug: string,
+  id: string,
+  status: "resolved" | "dismissed"
+): void {
   const db = openDb(slug);
+  const tidBytes = decodeId(id);
+  const ts = new Date().toISOString();
   db.run(
-    "UPDATE explanation_threads SET status = ?, closed_at = CURRENT_TIMESTAMP " +
+    "UPDATE explanation_threads SET status = ?, closed_at = ?, updated_at = ? " +
       "WHERE id = ? AND status = 'open'",
-    [status, id]
+    [status, ts, ts, tidBytes]
   );
 }
 
-export function listOpenThreads(slug: string, awaiting?: "user" | "agent"): ThreadListRow[] {
+export function listOpenThreads(
+  slug: string,
+  awaiting?: "user" | "agent"
+): ThreadListRow[] {
   const db = openDb(slug);
   const where =
     awaiting === undefined
@@ -559,16 +845,37 @@ export function listOpenThreads(slug: string, awaiting?: "user" | "agent"): Thre
     ${where}
     ORDER BY (lm.created_at IS NULL), lm.created_at DESC, t.id DESC
   `;
+  type Row = ThreadRow & {
+    exam: string;
+    question_number: number;
+    question_text_ja: string | null;
+    question_text: string;
+    last_role: "user" | "agent" | null;
+    last_content: string | null;
+    last_at: string | null;
+    message_count: number;
+  };
+  let rows: Row[];
   if (awaiting === undefined) {
-    return db.query<ThreadListRow, []>(sql).all();
+    rows = db.query<Row, []>(sql).all();
+  } else {
+    const opposite = awaiting === "agent" ? "user" : "agent";
+    rows = db.query<Row, [string]>(sql).all(opposite);
   }
-  const opposite = awaiting === "agent" ? "user" : "agent";
-  return db.query<ThreadListRow, [string]>(sql).all(opposite);
+  return rows.map(({ id, ...rest }) => ({
+    ...rest,
+    id: uuidx.encode(id),
+  }));
 }
 
-export type ThreadListRowAll = ThreadListRow & { slug: string; exam_name: string };
+export type ThreadListRowAll = ThreadListRow & {
+  slug: string;
+  exam_name: string;
+};
 
-export function listOpenThreadsAll(awaiting?: "user" | "agent"): ThreadListRowAll[] {
+export function listOpenThreadsAll(
+  awaiting?: "user" | "agent"
+): ThreadListRowAll[] {
   const exams = discoverExams();
   const out: ThreadListRowAll[] = [];
   for (const e of exams) {
@@ -588,7 +895,7 @@ export function countAwaitingAgentAll(): number {
   return n;
 }
 
-export function updateExplanation(slug: string, qid: number, ja: string) {
+export function updateExplanation(slug: string, qid: number, ja: string): void {
   const db = openDb(slug);
   db.run("UPDATE questions SET explanation_ja = ? WHERE id = ?", [ja, qid]);
 }
@@ -608,80 +915,80 @@ export function clearQuestionTranslation(slug: string, qid: number): void {
 export function getOpenThreadIdForQuestion(
   slug: string,
   qid: number
-): number | null {
+): string | null {
   const db = openDb(slug);
   const r = db
-    .query<{ id: number }, [number]>(
+    .query<{ id: Uint8Array }, [number]>(
       "SELECT id FROM explanation_threads WHERE question_id = ? AND status = 'open' " +
         "ORDER BY id DESC LIMIT 1"
     )
     .get(qid);
-  return r ? r.id : null;
+  return r ? uuidx.encode(r.id) : null;
 }
 
 export function getThreadStatus(
   slug: string,
-  tid: number
+  tid: string
 ): "open" | "resolved" | "dismissed" | null {
   const db = openDb(slug);
   const r = db
-    .query<{ status: "open" | "resolved" | "dismissed" }, [number]>(
+    .query<{ status: "open" | "resolved" | "dismissed" }, [Uint8Array]>(
       "SELECT status FROM explanation_threads WHERE id = ?"
     )
-    .get(tid);
+    .get(decodeId(tid));
   return r ? r.status : null;
 }
 
 export function getThreadLastRole(
   slug: string,
-  tid: number
+  tid: string
 ): "user" | "agent" | null {
   const db = openDb(slug);
   const r = db
-    .query<{ role: "user" | "agent" }, [number]>(
+    .query<{ role: "user" | "agent" }, [Uint8Array]>(
       "SELECT role FROM explanation_messages WHERE thread_id = ? " +
         "ORDER BY id DESC LIMIT 1"
     )
-    .get(tid);
+    .get(decodeId(tid));
   return r ? r.role : null;
 }
 
 export function getThreadAgentSessionId(
   slug: string,
-  tid: number
+  tid: string
 ): string | null {
   const db = openDb(slug);
   const r = db
-    .query<{ agent_session_id: string | null }, [number]>(
+    .query<{ agent_session_id: string | null }, [Uint8Array]>(
       "SELECT agent_session_id FROM explanation_threads WHERE id = ?"
     )
-    .get(tid);
+    .get(decodeId(tid));
   return r ? r.agent_session_id : null;
 }
 
 export function setThreadAgentSessionId(
   slug: string,
-  tid: number,
+  tid: string,
   sessionId: string | null
 ): void {
   const db = openDb(slug);
   db.run("UPDATE explanation_threads SET agent_session_id = ? WHERE id = ?", [
     sessionId,
-    tid,
+    decodeId(tid),
   ]);
 }
 
 export function getLatestUserContent(
   slug: string,
-  tid: number
+  tid: string
 ): string | null {
   const db = openDb(slug);
   const r = db
-    .query<{ content: string }, [number]>(
+    .query<{ content: string }, [Uint8Array]>(
       "SELECT content FROM explanation_messages " +
         "WHERE thread_id = ? AND role = 'user' " +
         "ORDER BY id DESC LIMIT 1"
     )
-    .get(tid);
+    .get(decodeId(tid));
   return r ? r.content : null;
 }

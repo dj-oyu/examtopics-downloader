@@ -47,11 +47,35 @@ export function makeQuestionDetail(
   };
 }
 
+// Fixture ids are 26-char Crockford base32 strings (UUIDv7 BLOB
+// encoded). The deterministic literals below are NOT real UUIDv7s
+// — they're hand-picked so tests have stable, recognizable values
+// instead of random output.
+const THREAD_ID_FIXTURE = "01HZX5K2ABCDEFGHJKMNPQRSTV";
+const MESSAGE_ID_FIXTURE = "01HZX5K2WXYZ0123456789ABCD";
+
+// fixtureId returns a stable 26-char Crockford-base32 id derived from
+// a small integer, so tests that previously used `id: 1` etc. still
+// have a unique, reproducible string they can plug into assertions.
+// First char stays in 0–7 (the valid leading-byte range); the low
+// bits encode `n` in big-endian base32.
+const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+export function fixtureId(n: number): string {
+  let s = "";
+  let x = n;
+  while (x > 0) {
+    s = ALPHABET[x & 31] + s;
+    x = Math.floor(x / 32);
+  }
+  if (s === "") s = "0";
+  return s.padStart(26, "0");
+}
+
 export function makeThread(
   overrides: Partial<Thread> = {}
 ): Thread {
   return {
-    id: 42,
+    id: THREAD_ID_FIXTURE,
     question_id: 1,
     status: "open",
     created_at: "2026-04-30 10:00:00",
@@ -63,8 +87,8 @@ export function makeThread(
 
 export function makeMessage(overrides: Partial<Message> = {}): Message {
   return {
-    id: 100,
-    thread_id: 42,
+    id: MESSAGE_ID_FIXTURE,
+    thread_id: THREAD_ID_FIXTURE,
     role: "user",
     author: "web",
     content: "なぜ C が正解なのか",

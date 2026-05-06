@@ -1,7 +1,24 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { marked } from "marked";
 import * as q from "./db";
+import * as uuidx from "./uuidx";
 import { formatLocalTimestamp } from "./views/timestamps";
+
+// parseThreadId validates a 26-char Crockford base32 thread id from
+// req.param("id"). Returns the canonical form on success, null when
+// the segment is the wrong shape (length, charset, oversized first
+// char). Routes use this in place of the legacy parseInt to avoid
+// silently coercing garbage to NaN.
+function parseThreadId(c: Context): string | null {
+  const raw = c.req.param("id") ?? "";
+  try {
+    uuidx.decode(raw);
+    return raw;
+  } catch {
+    return null;
+  }
+}
 import {
   enqueueExplain,
   enqueueRetranslate,
@@ -194,7 +211,8 @@ app.post("/e/:slug/q/:id/threads", async (c) => {
 
 app.post("/e/:slug/threads/:id/reply", async (c) => {
   const slug = c.req.param("slug");
-  const tid = parseInt(c.req.param("id"), 10);
+  const tid = parseThreadId(c);
+  if (tid === null) return c.notFound();
   const form = await c.req.parseBody();
   const content = ((form.content as string) || "").trim();
   if (content) {
@@ -207,7 +225,8 @@ app.post("/e/:slug/threads/:id/reply", async (c) => {
 
 app.post("/e/:slug/threads/:id/resolve", (c) => {
   const slug = c.req.param("slug");
-  const tid = parseInt(c.req.param("id"), 10);
+  const tid = parseThreadId(c);
+  if (tid === null) return c.notFound();
   const t = q.getThread(slug, tid);
   requestClose(slug, tid, "resolved");
   return c.redirect(t ? `/e/${slug}/q/${t.question_id}` : "/requests");
@@ -215,7 +234,8 @@ app.post("/e/:slug/threads/:id/resolve", (c) => {
 
 app.post("/e/:slug/threads/:id/dismiss", (c) => {
   const slug = c.req.param("slug");
-  const tid = parseInt(c.req.param("id"), 10);
+  const tid = parseThreadId(c);
+  if (tid === null) return c.notFound();
   const t = q.getThread(slug, tid);
   requestClose(slug, tid, "dismissed");
   return c.redirect(t ? `/e/${slug}/q/${t.question_id}` : "/requests");
@@ -223,8 +243,8 @@ app.post("/e/:slug/threads/:id/dismiss", (c) => {
 
 app.get("/e/:slug/threads/:id/messages.json", (c) => {
   const slug = c.req.param("slug");
-  const tid = parseInt(c.req.param("id"), 10);
-  if (Number.isNaN(tid)) return c.notFound();
+  const tid = parseThreadId(c);
+  if (tid === null) return c.notFound();
   const t = q.getThread(slug, tid);
   if (!t) return c.notFound();
   return c.json({
@@ -248,8 +268,8 @@ app.get("/e/:slug/threads/:id/messages.json", (c) => {
 
 app.get("/e/:slug/threads/:id/events", (c) => {
   const slug = c.req.param("slug");
-  const tid = parseInt(c.req.param("id"), 10);
-  if (Number.isNaN(tid)) return c.notFound();
+  const tid = parseThreadId(c);
+  if (tid === null) return c.notFound();
   if (!q.getThread(slug, tid)) return c.notFound();
 
   const stream = new ReadableStream({

@@ -36,7 +36,7 @@ const RETRANS_ALLOWED_TOOLS = "Bash,Read,Write";
 // sweet spot. Override via env if you want to A/B with Haiku/Opus.
 const RETRANS_MODEL = process.env.RETRANS_MODEL ?? "claude-sonnet-4-6";
 
-type ExplainJob = { kind: "explain"; slug: string; tid: number };
+type ExplainJob = { kind: "explain"; slug: string; tid: string };
 type RetransJob = { kind: "retranslate"; slug: string; qid: number };
 type Job = ExplainJob | RetransJob;
 type CloseKind = "resolved" | "dismissed";
@@ -62,7 +62,7 @@ const questionSubscribers = new Map<
   Set<(event: QuestionSseEvent) => void>
 >();
 
-const explainKey = (slug: string, tid: number) => `explain:${slug}:${tid}`;
+const explainKey = (slug: string, tid: string) => `explain:${slug}:${tid}`;
 const retransKey = (slug: string, qid: number) =>
   `retrans:${slug}:${qid}`;
 const jobKey = (j: Job): string =>
@@ -84,7 +84,7 @@ function loadRulesExcerpt(): string {
   return rulesExcerpt;
 }
 
-function buildExplainInitialPrompt(slug: string, tid: number): string {
+function buildExplainInitialPrompt(slug: string, tid: string): string {
   const rules = loadRulesExcerpt();
   return `You are the explanation agent for an AWS exam study tool. The user asked a question on a specific exam item; you must reply with a structured agent message.
 
@@ -167,7 +167,7 @@ export function recoverAwaitingThreads(): void {
   );
 }
 
-export function enqueueExplain(slug: string, tid: number): void {
+export function enqueueExplain(slug: string, tid: string): void {
   const key = explainKey(slug, tid);
   if (inFlight.has(key)) {
     logEvent("enqueue_skipped", { slug, tid, kind: "explain", reason: "in_flight" });
@@ -225,7 +225,7 @@ export function isRetranslatePending(slug: string, qid: number): boolean {
   return stack.some((j) => jobKey(j) === key);
 }
 
-export function isExplainPending(slug: string, tid: number): boolean {
+export function isExplainPending(slug: string, tid: string): boolean {
   const key = explainKey(slug, tid);
   if (inFlight.has(key)) return true;
   return stack.some((j) => jobKey(j) === key);
@@ -237,7 +237,7 @@ export function isExplainPending(slug: string, tid: number): boolean {
  */
 export function requestClose(
   slug: string,
-  tid: number,
+  tid: string,
   kind: CloseKind
 ): boolean {
   const key = explainKey(slug, tid);
@@ -254,7 +254,7 @@ export function requestClose(
 
 export function subscribe(
   slug: string,
-  tid: number,
+  tid: string,
   fn: (event: SseEvent) => void
 ): () => void {
   const subKey = `${slug}:${tid}`;
@@ -283,7 +283,7 @@ export function subscribe(
   };
 }
 
-function notify(slug: string, tid: number, event: SseEvent): void {
+function notify(slug: string, tid: string, event: SseEvent): void {
   const set = subscribers.get(`${slug}:${tid}`);
   if (!set) return;
   for (const fn of set) {
@@ -510,7 +510,7 @@ async function drainQueue(): Promise<void> {
   }
 }
 
-async function runExplain(slug: string, tid: number): Promise<void> {
+async function runExplain(slug: string, tid: string): Promise<void> {
   const sessionId = getThreadAgentSessionId(slug, tid);
 
   if (sessionId) {
@@ -635,7 +635,7 @@ async function runRetranslate(slug: string, qid: number): Promise<void> {
 
 function maybeUpdateSessionId(
   slug: string,
-  tid: number,
+  tid: string,
   stdout: string,
   prev: string | null
 ): void {

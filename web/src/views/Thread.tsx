@@ -66,7 +66,7 @@ const CitationList: FC<{ items: Citation[] }> = ({ items }) => (
   </details>
 );
 
-const ThinkingBubble: FC<{ tid: number; visible: boolean }> = ({
+const ThinkingBubble: FC<{ tid: string; visible: boolean }> = ({
   tid,
   visible,
 }) => (
@@ -94,7 +94,7 @@ const ThinkingBubble: FC<{ tid: number; visible: boolean }> = ({
 );
 
 const MessageBubble: FC<{
-  id: number;
+  id: string;
   role: "user" | "agent";
   author: string | null;
   content: string;
@@ -105,7 +105,7 @@ const MessageBubble: FC<{
   const cites = role === "agent" ? parseCitations(citations) : [];
   return (
     <li
-      data-msg-id={String(id)}
+      data-msg-id={id}
       class={
         "pl-3 py-2 border-l-4 " +
         (role === "user"
@@ -133,7 +133,7 @@ const MessageBubble: FC<{
   );
 };
 
-const ThreadLiveScript: FC<{ slug: string; tid: number }> = ({ slug, tid }) => {
+const ThreadLiveScript: FC<{ slug: string; tid: string }> = ({ slug, tid }) => {
   const config = JSON.stringify({ slug, tid });
   const js = `${loadClientScript("thread-live")}\ninitThreadLive(${config});`;
   return <script>{raw(js)}</script>;
