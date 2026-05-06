@@ -222,7 +222,8 @@ func TestLoad_HostIDFormat(t *testing.T) {
 		t.Fatalf("HostID suffix = %q (len %d), want 4 hex chars", suffix, len(suffix))
 	}
 	for _, r := range suffix {
-		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+		isHex := (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')
+		if !isHex {
 			t.Errorf("non-hex char %q in suffix %q", r, suffix)
 		}
 	}

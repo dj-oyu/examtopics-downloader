@@ -142,7 +142,7 @@ func TestEncodePreservesLexOrder(t *testing.T) {
 	}
 	for _, p := range pairs {
 		l, h := Encode(p.lo), Encode(p.hi)
-		if !(l < h) {
+		if l >= h {
 			t.Fatalf("lex order violated: %q !< %q", l, h)
 		}
 	}

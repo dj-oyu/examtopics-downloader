@@ -1,0 +1,18 @@
+# golangci-lint v2 config. We start from the "standard" linter preset
+# (errcheck, govet, ineffassign, staticcheck, unused) — this is the same
+# set §5 task 2 of docs/plans/portable-builds.md asks for as the minimum.
+# Additional linters can be enabled in follow-up commits without touching
+# the default preset.
+
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
