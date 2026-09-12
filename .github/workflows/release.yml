@@ -87,6 +87,8 @@ jobs:
       # a bare interpreter is enough: no uv, no venv.
       - name: Markdown -> SQLite parser tests
         run: python3 tools/test_md_to_sqlite.py
+      - name: Migration-runner tests (Go v3 DB vs legacy 001/002)
+        run: python3 tools/test_translate_migrations.py
 
   bun-check:
     runs-on: ubuntu-latest

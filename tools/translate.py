@@ -80,12 +80,34 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 _MIG_RE = re.compile(r"^(\d+)_(.*)\.sql$")
 
+# The Go writer owns the v3 "multihost sync" schema (internal/sqlite/migrations,
+# embedded, starting at 003): explanation_* tables get BLOB(16) UUIDv7 primary
+# keys plus host_id / updated_at. The legacy 001/002 scripts in this repo's
+# migrations/ dir rebuild those tables into the old INTEGER-PK shape, so replaying
+# them against a v3 DB both fails (duplicate column) and would downgrade the
+# schema. They are superseded there — same reasoning as the Go runner, which
+# starts at 003 and never replays them.
+V3_SCHEMA_VERSION = 3
+
+
+def is_v3_db(conn: sqlite3.Connection) -> bool:
+    """True when the Go-side v3 (multihost) migration has been applied."""
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM schema_version WHERE version >= ? LIMIT 1",
+            (V3_SCHEMA_VERSION,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return row is not None
+
 
 def apply_pending_migrations(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_VERSION_DDL)
     applied = {row[0] for row in conn.execute("SELECT version FROM schema_version")}
     if not MIGRATIONS_DIR.is_dir():
         return
+    v3 = is_v3_db(conn)
     files = sorted(
         f for f in MIGRATIONS_DIR.iterdir()
         if f.is_file() and _MIG_RE.match(f.name)
@@ -96,6 +118,13 @@ def apply_pending_migrations(conn: sqlite3.Connection) -> None:
             continue
         version = int(m.group(1))
         if version in applied:
+            continue
+        if v3 and version < V3_SCHEMA_VERSION:
+            print(
+                f"translate: skipping legacy migration {f.name} "
+                f"(DB is already at the v3 multihost schema)",
+                file=sys.stderr,
+            )
             continue
         sql = f.read_text(encoding="utf-8")
         conn.execute("PRAGMA foreign_keys = OFF")
@@ -593,6 +622,13 @@ def cmd_reply(conn: sqlite3.Connection, args) -> None:
     """
     payload = _read_stdin_json()
     tid = args.id
+    if is_v3_db(conn):
+        sys.exit(
+            "reply: this DB uses the v3 multihost schema (BLOB(16) uuid thread ids "
+            "plus host_id/updated_at), so the legacy Python writer cannot append "
+            "messages to it. Thread writes are owned by the Go/web side — use "
+            "`examtopicsdl translate explain -db <db> -tid <tid>` or the web UI."
+        )
     t = conn.execute(
         "SELECT id, question_id, status FROM explanation_threads WHERE id = ?",
         (tid,),
