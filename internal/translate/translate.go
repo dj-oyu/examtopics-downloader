@@ -22,14 +22,13 @@ import (
 // embedded at build time from internal/translate/assets/exam-translator.md.
 //
 // The canonical source of truth lives at <repo>/skills/exam-translator.md;
-// the asset file beside this package and .gemini/skills/exam-translator/
+// the asset file beside this package and the CLI's own skill layout
 // SKILL.md are both regenerated from it via `go generate ./...`. CI runs
 // the generator and `git diff --exit-code` to refuse drift in either
 // direction. Edit skills/exam-translator.md, then `go generate` to
 // propagate.
 //
 //go:generate go run ../../tools/skillsync
-//
 //go:embed assets/exam-translator.md
 var SkillMarkdown string
 
@@ -41,12 +40,11 @@ type Client struct {
 	SkillRelPath string
 }
 
-// known lists the four planned clients per §3.6: gemini-cli, Claude Code,
+// known lists the supported clients per §3.6: Claude Code,
 // OpenAI Codex CLI, and a generic exec adapter for arbitrary command
 // runners. SkillRelPath is what the CLI's own skill discovery rules
 // expect; if a CLI later changes its convention, only this table moves.
 var known = []Client{
-	{Name: "gemini", SkillRelPath: filepath.Join(".gemini", "skills", "exam-translator", "SKILL.md")},
 	{Name: "claude", SkillRelPath: filepath.Join(".claude", "skills", "exam-translator", "SKILL.md")},
 	{Name: "codex", SkillRelPath: filepath.Join(".codex", "skills", "exam-translator", "SKILL.md")},
 	{Name: "exec", SkillRelPath: filepath.Join("skills", "exam-translator.md")},
@@ -60,7 +58,7 @@ func KnownClients() []Client {
 	return out
 }
 
-// ClientByName looks up a client by Name (e.g., "gemini") and reports
+// ClientByName looks up a client by Name (e.g., "claude") and reports
 // whether it was found.
 func ClientByName(name string) (Client, bool) {
 	for _, c := range known {

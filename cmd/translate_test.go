@@ -14,21 +14,26 @@ func TestRunTranslateTo_ListClients(t *testing.T) {
 	if exit != 0 {
 		t.Fatalf("exit = %d, want 0", exit)
 	}
-	for _, want := range []string{"gemini", "claude", "codex", "exec"} {
+	// gemini-cli support was removed (upstream development wound down): the
+	// remaining clients are claude (wired), codex and exec (placeholders).
+	for _, want := range []string{"claude", "codex", "exec"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("list output missing %q\n%s", want, buf.String())
 		}
+	}
+	if strings.Contains(buf.String(), "gemini") {
+		t.Errorf("list output should no longer offer gemini:\n%s", buf.String())
 	}
 }
 
 func TestRunTranslateTo_DryRunMaterializesSkill(t *testing.T) {
 	root := t.TempDir()
 	var buf bytes.Buffer
-	exit := runTranslateTo(&buf, []string{"-client", "gemini", "-root", root, "-dry-run"})
+	exit := runTranslateTo(&buf, []string{"-client", "claude", "-root", root, "-dry-run"})
 	if exit != 0 {
 		t.Fatalf("exit = %d, want 0\n%s", exit, buf.String())
 	}
-	target := filepath.Join(root, ".gemini", "skills", "exam-translator", "SKILL.md")
+	target := filepath.Join(root, ".claude", "skills", "exam-translator", "SKILL.md")
 	got, err := os.ReadFile(target)
 	if err != nil {
 		t.Fatalf("expected materialized file at %s: %v", target, err)

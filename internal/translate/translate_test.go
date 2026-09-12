@@ -21,20 +21,26 @@ func TestKnownClients_IncludesAllPlannedTargets(t *testing.T) {
 	for _, c := range KnownClients() {
 		got[c.Name] = struct{}{}
 	}
-	for _, want := range []string{"gemini", "claude", "codex", "exec"} {
+	for _, want := range []string{"claude", "codex", "exec"} {
 		if _, ok := got[want]; !ok {
 			t.Errorf("KnownClients missing %q (have %v)", want, got)
 		}
 	}
+	if _, ok := got["gemini"]; ok {
+		t.Error("KnownClients still offers gemini — gemini-cli support was removed")
+	}
 }
 
 func TestClientByName_FoundAndNotFound(t *testing.T) {
-	c, ok := ClientByName("gemini")
+	c, ok := ClientByName("claude")
 	if !ok {
-		t.Fatal("ClientByName(gemini) returned ok=false")
+		t.Fatal("ClientByName(claude) returned ok=false")
 	}
-	if c.Name != "gemini" {
-		t.Errorf("ClientByName(gemini).Name = %q", c.Name)
+	if c.Name != "claude" {
+		t.Errorf("ClientByName(claude).Name = %q", c.Name)
+	}
+	if _, ok := ClientByName("gemini"); ok {
+		t.Error("ClientByName(gemini) returned ok=true, want false")
 	}
 	if _, ok := ClientByName("nope"); ok {
 		t.Error("ClientByName(nope) returned ok=true, want false")
@@ -44,8 +50,8 @@ func TestClientByName_FoundAndNotFound(t *testing.T) {
 func TestMaterialize_WritesSkillToClientLayout(t *testing.T) {
 	root := t.TempDir()
 	c := Client{
-		Name:          "test-client",
-		SkillRelPath:  filepath.Join(".test-client", "skills", "exam-translator", "SKILL.md"),
+		Name:         "test-client",
+		SkillRelPath: filepath.Join(".test-client", "skills", "exam-translator", "SKILL.md"),
 	}
 	written, err := Materialize(c, root)
 	if err != nil {

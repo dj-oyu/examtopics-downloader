@@ -244,7 +244,7 @@ func TestRetranslate_RejectsMismatchedID(t *testing.T) {
 }
 
 func TestAdapterFor_KnownNames(t *testing.T) {
-	for _, name := range []string{"claude", "gemini", "codex", "exec"} {
+	for _, name := range []string{"claude", "codex", "exec"} {
 		a, ok := AdapterFor(name)
 		if !ok {
 			t.Errorf("AdapterFor(%q) = !ok", name)

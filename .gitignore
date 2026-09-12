@@ -29,13 +29,10 @@ web/dist/
 .idea/
 GEMINI.md
 
-# === agent config: ignore everything under .gemini/ except whitelisted skills.
-# Pattern uses /* + re-include to bypass git's "cannot re-include if parent
-# directory is excluded" limitation that breaks plain `!.gemini/skills/foo.md`.
-.gemini/*
-!.gemini/skills/
-.gemini/skills/*
-!.gemini/skills/exam-translator.md
+# === agent config ===
+# No .gemini/ rules any more: the per-client skill copies are generated
+# (tools/skillsync -> .claude/, gitignored above) or materialized at runtime by
+# `examtopicsdl translate -client <name>`.
 
 # === secrets: ignore all .env* variants, allow only the schema example ===
 .env*

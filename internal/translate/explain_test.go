@@ -544,7 +544,7 @@ func TestRunExplain_ResumesOnPriorSessionID(t *testing.T) {
 }
 
 func TestExplainAdapterFor_KnownNames(t *testing.T) {
-	for _, name := range []string{"claude", "gemini", "codex", "exec"} {
+	for _, name := range []string{"claude", "codex", "exec"} {
 		a, ok := ExplainAdapterFor(name)
 		if !ok {
 			t.Errorf("ExplainAdapterFor(%q) = !ok", name)
@@ -579,10 +579,10 @@ func TestExtractClaudeSessionID(t *testing.T) {
 }
 
 // Stub-explain adapters of non-claude clients should fail with a
-// "not yet wired" error so misconfigured `-client gemini` exits
+// "not yet wired" error so a misconfigured `-client` exits
 // non-zero rather than silently producing an empty reply.
-func TestExplainAdapterFor_GeminiCodexExecErrorOnRun(t *testing.T) {
-	for _, name := range []string{"gemini", "codex", "exec"} {
+func TestExplainAdapterFor_CodexExecErrorOnRun(t *testing.T) {
+	for _, name := range []string{"codex", "exec"} {
 		a, ok := ExplainAdapterFor(name)
 		if !ok {
 			t.Fatalf("ExplainAdapterFor(%q) ok=false", name)

@@ -51,8 +51,8 @@ type Config struct {
 // fall back to the CLI's hard-coded defaults (see ClientOrDefault) so
 // users can opt in incrementally.
 type TranslateSection struct {
-	// Client is the LLM CLI to spawn ("claude" | "gemini" | "codex" |
-	// "exec"). Empty defers to the binary's flag default.
+	// Client is the LLM CLI to spawn ("claude" | "codex" | "exec").
+	// Empty defers to the binary's flag default.
 	Client string `json:"client"`
 	// Model is passed to the chosen client as its native model flag
 	// (e.g. claude --model). Empty leaves the client's own default.

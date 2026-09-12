@@ -37,7 +37,7 @@ func runTranslateMaterialize(out io.Writer, args []string) int {
 	w := utils.NewWriteErr(out)
 	fs := flag.NewFlagSet("translate", flag.ContinueOnError)
 	fs.SetOutput(out)
-	clientName := fs.String("client", "gemini", "LLM CLI client (gemini | claude | codex | exec)")
+	clientName := fs.String("client", "claude", "LLM CLI client (claude | codex | exec)")
 	root := fs.String("root", ".", "Workspace root where the skill will be materialized")
 	dryRun := fs.Bool("dry-run", false, "Materialize the skill but do not invoke the client")
 	listClients := fs.Bool("list-clients", false, "Print supported clients and exit")
@@ -75,7 +75,7 @@ func runTranslateMaterialize(out io.Writer, args []string) int {
 // <path> -qid <id> [-client <name>] [-model <model>]`. The client
 // must be one of the adapters AdapterFor knows about; today only
 // -client claude wires through to a real CLI, but the others
-// (-client gemini / codex / exec) parse and dispatch so end-to-end
+// (-client codex / exec) parse and dispatch so end-to-end
 // smoke tests catch a missing adapter immediately.
 //
 // Both -client and -model default to the values in config.json's
@@ -93,7 +93,7 @@ func runRetranslateTo(out io.Writer, args []string) int {
 	fs.SetOutput(out)
 	dbPath := fs.String("db", "", "Path to the SQLite DB (required)")
 	qid := fs.Int("qid", 0, "Question id to retranslate (required)")
-	clientName := fs.String("client", cfg.Tools.Translate.ClientOrDefault(), "LLM CLI client (claude | gemini | codex | exec). Defaults to tools.translate.client from config.json.")
+	clientName := fs.String("client", cfg.Tools.Translate.ClientOrDefault(), "LLM CLI client (claude | codex | exec). Defaults to tools.translate.client from config.json.")
 	modelFlag := fs.String("model", cfg.Tools.Translate.Model, "Model identifier passed to the client (e.g. claude-sonnet-4-6). Defaults to tools.translate.model from config.json; empty leaves the client default.")
 	dryRun := fs.Bool("dry-run", false, "Stage the input.json and stop without invoking the client")
 	workDir := fs.String("workdir", "", "Optional staging directory (input.json / output.json live here). Default: per-call temp dir.")
@@ -117,7 +117,7 @@ func runRetranslateTo(out io.Writer, args []string) int {
 		Bin:   cfg.Tools.Translate.Bin,
 	})
 	if !ok {
-		w.Printf("translate retranslate: unknown client %q (claude | gemini | codex | exec)\n", *clientName)
+		w.Printf("translate retranslate: unknown client %q (claude | codex | exec)\n", *clientName)
 		return 2
 	}
 
@@ -163,7 +163,7 @@ func runExplainSubTo(out io.Writer, args []string) int {
 	fs.SetOutput(out)
 	dbPath := fs.String("db", "", "Path to the SQLite DB (required)")
 	tid := fs.String("tid", "", "Thread id as 26-char Crockford base32 (required)")
-	clientName := fs.String("client", cfg.Tools.Translate.ClientOrDefault(), "LLM CLI client (claude | gemini | codex | exec). Defaults to tools.translate.client from config.json.")
+	clientName := fs.String("client", cfg.Tools.Translate.ClientOrDefault(), "LLM CLI client (claude | codex | exec). Defaults to tools.translate.client from config.json.")
 	modelFlag := fs.String("model", cfg.Tools.Translate.Model, "Model identifier passed to the client (e.g. claude-sonnet-4-6). Defaults to tools.translate.model from config.json; empty leaves the client default.")
 	dryRun := fs.Bool("dry-run", false, "Stage the input.json and stop without invoking the client")
 	workDir := fs.String("workdir", "", "Optional staging directory (input.json / output.json live here). Default: per-call temp dir.")
@@ -187,7 +187,7 @@ func runExplainSubTo(out io.Writer, args []string) int {
 		Bin:   cfg.Tools.Translate.Bin,
 	})
 	if !ok {
-		w.Printf("translate explain: unknown client %q (claude | gemini | codex | exec)\n", *clientName)
+		w.Printf("translate explain: unknown client %q (claude | codex | exec)\n", *clientName)
 		return 2
 	}
 

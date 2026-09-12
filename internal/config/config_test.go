@@ -255,9 +255,9 @@ func TestTranslate_JSONPopulatesSection(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte(`{
 		"tools": {
 			"translate": {
-				"client": "gemini",
-				"model": "gemini-3.1-flash-lite-preview",
-				"bin": "/usr/local/bin/gemini"
+				"client": "claude",
+				"model": "claude-sonnet-4-6",
+				"bin": "/usr/local/bin/claude"
 			}
 		}
 	}`), 0o644); err != nil {
@@ -268,17 +268,17 @@ func TestTranslate_JSONPopulatesSection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Tools.Translate.Client != "gemini" {
-		t.Errorf("Client = %q, want gemini", cfg.Tools.Translate.Client)
+	if cfg.Tools.Translate.Client != "claude" {
+		t.Errorf("Client = %q, want claude", cfg.Tools.Translate.Client)
 	}
-	if cfg.Tools.Translate.Model != "gemini-3.1-flash-lite-preview" {
+	if cfg.Tools.Translate.Model != "claude-sonnet-4-6" {
 		t.Errorf("Model = %q", cfg.Tools.Translate.Model)
 	}
-	if cfg.Tools.Translate.Bin != "/usr/local/bin/gemini" {
+	if cfg.Tools.Translate.Bin != "/usr/local/bin/claude" {
 		t.Errorf("Bin = %q", cfg.Tools.Translate.Bin)
 	}
-	if got := cfg.Tools.Translate.ClientOrDefault(); got != "gemini" {
-		t.Errorf("ClientOrDefault when set = %q, want gemini", got)
+	if got := cfg.Tools.Translate.ClientOrDefault(); got != "claude" {
+		t.Errorf("ClientOrDefault when set = %q, want claude", got)
 	}
 }
 
@@ -286,7 +286,7 @@ func TestTranslate_EnvOverridesJSON(t *testing.T) {
 	dir := withIsolatedHome(t)
 	cfgPath := filepath.Join(dir, "myconfig.json")
 	if err := os.WriteFile(cfgPath, []byte(`{
-		"tools": { "translate": { "client": "gemini", "model": "g-1" } }
+		"tools": { "translate": { "client": "claude", "model": "c-1" } }
 	}`), 0o644); err != nil {
 		t.Fatalf("seed: %v", err)
 	}

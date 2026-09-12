@@ -98,18 +98,6 @@ func (a *ClaudeAdapter) Run(ctx context.Context, opts RunOpts) error {
 	return nil
 }
 
-// GeminiAdapter is a placeholder — the gemini-cli skill discovery
-// expects .gemini/skills/ layout and a worker subagent pattern, which
-// task 4-H deliberately does not wire yet. Keeping the type in the
-// interface map lets `-list-clients` enumerate the future surface
-// without erroring.
-type GeminiAdapter struct{}
-
-func (a *GeminiAdapter) Name() string { return "gemini" }
-func (a *GeminiAdapter) Run(_ context.Context, _ RunOpts) error {
-	return errors.New("gemini adapter not yet wired — pending §3.6 worker dispatcher")
-}
-
 // CodexAdapter is a placeholder.
 type CodexAdapter struct{}
 
@@ -156,7 +144,7 @@ type AdapterOpts struct {
 // AdapterFor returns the Adapter that pairs with the named client.
 // Caller should treat ok=false as "unknown client name"; the four
 // names mirror KnownClients() so -list-clients output and -client
-// flag values stay aligned.
+// flag values stay aligned (claude = wired, codex/exec = placeholders).
 //
 // AdapterOpts is variadic so existing test call sites (`AdapterFor("claude")`)
 // keep compiling. Production CLI / Web paths pass an opts populated
@@ -173,8 +161,6 @@ func AdapterFor(name string, opts ...AdapterOpts) (Adapter, bool) {
 			bin = os.Getenv("CLAUDE_BIN")
 		}
 		return &ClaudeAdapter{Bin: bin, Model: o.Model}, true
-	case "gemini":
-		return &GeminiAdapter{}, true
 	case "codex":
 		return &CodexAdapter{}, true
 	case "exec":
@@ -332,18 +318,11 @@ func (a *ClaudeExplainAdapter) RunExplain(ctx context.Context, opts ExplainRunOp
 	return ExplainRunResult{SessionID: extractClaudeSessionID(string(out))}, nil
 }
 
-// GeminiExplainAdapter / CodexExplainAdapter / ExecExplainAdapter are
-// placeholders — their non-explain twins (GeminiAdapter, CodexAdapter,
-// ExecAdapter) likewise stub out, and the explain path was never wired
-// to anything but claude. Returning a clear error keeps `-client gemini`
-// failing fast instead of silently writing nothing.
-type GeminiExplainAdapter struct{}
-
-func (a *GeminiExplainAdapter) Name() string { return "gemini" }
-func (a *GeminiExplainAdapter) RunExplain(_ context.Context, _ ExplainRunOpts) (ExplainRunResult, error) {
-	return ExplainRunResult{}, errors.New("gemini explain adapter not yet wired — pending §3.6 worker dispatcher")
-}
-
+// CodexExplainAdapter / ExecExplainAdapter are placeholders — their
+// non-explain twins (CodexAdapter, ExecAdapter) likewise stub out, and
+// the explain path was never wired to anything but claude. Returning a
+// clear error keeps a misconfigured -client failing fast instead of
+// silently writing nothing.
 type CodexExplainAdapter struct{}
 
 func (a *CodexExplainAdapter) Name() string { return "codex" }
@@ -380,8 +359,6 @@ func ExplainAdapterFor(name string, opts ...AdapterOpts) (ExplainAdapter, bool) 
 			bin = os.Getenv("CLAUDE_BIN")
 		}
 		return &ClaudeExplainAdapter{Bin: bin, Model: o.Model}, true
-	case "gemini":
-		return &GeminiExplainAdapter{}, true
 	case "codex":
 		return &CodexExplainAdapter{}, true
 	case "exec":
