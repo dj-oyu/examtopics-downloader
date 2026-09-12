@@ -89,6 +89,8 @@ jobs:
         run: python3 tools/test_md_to_sqlite.py
       - name: Migration-runner tests (Go v3 DB vs legacy 001/002)
         run: python3 tools/test_translate_migrations.py
+      - name: Answer-verdict tests (settled / ambiguous / unknown)
+        run: python3 tools/test_answer_verdict.py
 
   bun-check:
     runs-on: ubuntu-latest

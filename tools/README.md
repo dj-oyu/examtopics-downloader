@@ -170,7 +170,45 @@ choices(
   text, text_ja,
   PRIMARY KEY (question_id, label)
 )
+
+answer_verdicts(              -- 004, tools/answer_verdict.py が生成
+  question_id INTEGER PRIMARY KEY,
+  status,                     -- settled | ambiguous | unknown
+  accepted,                   -- JSON 配列: 正答として扱う組み合わせ (曖昧なら複数)
+  community,                  -- JSON [{label, votes, pct}] 投票内訳
+  total_votes, source, rationale, computed_at
+)
 ```
+
+## 答えが定まらない問題の扱い
+
+ExamTopics の解答はコミュニティ投票であって確定した正解キーではありません。1つの答えを
+断定して学習者を誤って「不正解」にするより、状態を正直に分けて記録します。
+
+| status | 意味 | 採点 |
+| --- | --- | --- |
+| `settled` | 多数派が `suggested_answer` と一致し、結論が出ている | その1つ |
+| `ambiguous` | 意見が割れている（多数派がキーと食い違う／最多でも 60% 未満） | `accepted` の**どれでも正解** |
+| `unknown` | 投票も正解キーも無い（画像問題など） | 判定不能（attempts に記録しない） |
+
+```bash
+# 判定内容を確認 (書き込まない)
+uv run tools/answer_verdict.py -d soa-c03.db
+# 書き込む (migration 004 が answer_verdicts を作る)
+uv run tools/answer_verdict.py -d soa-c03.db --apply
+# 閾値と許容数を変える (既定: 多数派 60% 以上で確定 / 最大2つまで正答)
+uv run tools/answer_verdict.py -d soa-c03.db --apply --threshold 0.7 --max-accepted 3
+```
+
+- 投票は `discussion` の `Selected Answer: X`（大小文字ゆらぎ許容、同一投稿者の重複は1票）
+  を集計し、無ければ `questions.comments` にフォールバックします。
+- 正解キーと多数派が食い違う場合は**両方を正答**として扱い、回答後に投票パーセンテージを
+  表示します（回答前は「⚠ あいまいな問題」バッジのみで、内訳は伏せます）。
+- `unknown` の行は採点せず、attempts に誤った「不正解」を書きません（復習キューからも除外）。
+- 複数選択の組み合わせ（`AB` ↔ `AC` のように一部だけ重なるケース）は文字単位ではなく
+  組み合わせ単位で比較します。
+- この表は**派生データ**です。同じ DB に対して再実行すれば同じ結果になるため `host_id` を
+  持たず、ホスト間マージの対象にもしません（`--apply` を各ホストで回せば一致します）。
 
 ### エージェント向け: スキルによる自動和訳 (推奨)
 

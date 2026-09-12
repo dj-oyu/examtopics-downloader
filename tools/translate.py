@@ -35,7 +35,11 @@ import sys
 from pathlib import Path
 
 DEFAULT_DB = Path("examtopics.db")
-MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+# Legacy migrations (001/002) live at the repo root; anything newer ships next to
+# the Go embed so Go, Bun and Python all read one authoritative file.
+MIGRATIONS_DIR = _REPO_ROOT / "migrations"
+GO_MIGRATIONS_DIR = _REPO_ROOT / "internal" / "sqlite" / "migrations"
 VALID_REASON_CODES = ("comprehension", "spec", "ambiguous", "translation")
 
 
@@ -102,24 +106,42 @@ def is_v3_db(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
+def discover_migrations() -> list[tuple[int, Path]]:
+    """Every migration file keyed by version, from both migration dirs.
+
+    The root `migrations/` dir holds the legacy 001/002 scripts; anything newer
+    lives beside the Go embed. A version present in both resolves to the Go-owned
+    copy, which is the authoritative one.
+    """
+    found: dict[int, Path] = {}
+    for d in (MIGRATIONS_DIR, GO_MIGRATIONS_DIR):
+        if not d.is_dir():
+            continue
+        for f in sorted(d.iterdir()):
+            m = _MIG_RE.match(f.name)
+            if f.is_file() and m:
+                found[int(m.group(1))] = f
+    return sorted(found.items())
+
+
 def apply_pending_migrations(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_VERSION_DDL)
     applied = {row[0] for row in conn.execute("SELECT version FROM schema_version")}
-    if not MIGRATIONS_DIR.is_dir():
-        return
-    v3 = is_v3_db(conn)
-    files = sorted(
-        f for f in MIGRATIONS_DIR.iterdir()
-        if f.is_file() and _MIG_RE.match(f.name)
-    )
-    for f in files:
-        m = _MIG_RE.match(f.name)
-        if not m:
-            continue
-        version = int(m.group(1))
+    for version, f in discover_migrations():
         if version in applied:
             continue
-        if v3 and version < V3_SCHEMA_VERSION:
+        if version == V3_SCHEMA_VERSION:
+            # 003 is destructive (it drops and rebuilds attempts/threads/messages)
+            # and needs the legacy-row capture plus a hostId that only the Go and
+            # Bun runners implement. Python never runs it — and never needs to,
+            # because it is also the one migration that cannot be replayed safely.
+            print(
+                f"translate: skipping {f.name} (destructive rebuild owned by the "
+                f"Go/Bun runners; run `examtopicsdl sync` or open the DB in the web UI)",
+                file=sys.stderr,
+            )
+            continue
+        if version < V3_SCHEMA_VERSION and V3_SCHEMA_VERSION in applied:
             print(
                 f"translate: skipping legacy migration {f.name} "
                 f"(DB is already at the v3 multihost schema)",

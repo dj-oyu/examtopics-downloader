@@ -129,7 +129,8 @@ class MigrationRunnerTest(unittest.TestCase):
             translate.apply_pending_migrations(conn)
 
             versions = {r[0] for r in conn.execute("SELECT version FROM schema_version")}
-            self.assertEqual(versions, {1, 2})
+            # 1 and 2 (legacy) plus 4 (Go-owned); 003 is never run from Python.
+            self.assertEqual(versions, {1, 2, 4})
             cols = {r[1] for r in conn.execute("PRAGMA table_info(explanation_threads)")}
             self.assertIn("agent_session_id", cols)
             msg_cols = {r[1] for r in conn.execute("PRAGMA table_info(explanation_messages)")}
@@ -158,7 +159,14 @@ class MigrationRunnerTest(unittest.TestCase):
             translate.apply_pending_migrations(conn)  # second call must be a no-op
 
             counts = dict(conn.execute("SELECT version, COUNT(*) FROM schema_version GROUP BY version"))
-            self.assertEqual(counts, {1: 1, 2: 1})
+            self.assertEqual(counts, {1: 1, 2: 1, 4: 1})
+            # Regression: with 004 recorded, MAX(version) >= 3 made a later call
+            # think the DB was already at v3 and run the destructive 003 on it.
+            self.assertNotIn(3, counts)
+            idtype = conn.execute(
+                "SELECT type FROM pragma_table_info('explanation_messages') WHERE name = 'id'"
+            ).fetchone()[0]
+            self.assertEqual(idtype, "INTEGER", "003 must not have rebuilt the legacy table")
             conn.close()
 
     def test_is_v3_db_detection(self):
