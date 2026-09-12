@@ -152,7 +152,7 @@ export const ThreadPanel: FC<{
           🙏 解説スレッドを作成する
         </summary>
         <form
-          method="POST"
+          method="post"
           action={`/e/${slug}/q/${q.id}/threads`}
           class="mt-2 space-y-2"
         >
@@ -226,7 +226,7 @@ export const ThreadPanel: FC<{
       <ThinkingBubble tid={thread.id} visible={explainPending} />
       <form
         id={`reply-form-${thread.id}`}
-        method="POST"
+        method="post"
         action={`/e/${slug}/threads/${thread.id}/reply`}
         class="space-y-2"
       >
@@ -256,12 +256,12 @@ export const ThreadPanel: FC<{
         </button>
       </form>
       <div class="flex gap-3 text-xs">
-        <form method="POST" action={`/e/${slug}/threads/${thread.id}/resolve`}>
+        <form method="post" action={`/e/${slug}/threads/${thread.id}/resolve`}>
           <button type="submit" class="text-green-700 hover:underline">
             ✓ 解決済みにする
           </button>
         </form>
-        <form method="POST" action={`/e/${slug}/threads/${thread.id}/dismiss`}>
+        <form method="post" action={`/e/${slug}/threads/${thread.id}/dismiss`}>
           <button type="submit" class="text-gray-500 hover:underline">
             破棄
           </button>

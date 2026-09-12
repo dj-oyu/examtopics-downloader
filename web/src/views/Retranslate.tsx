@@ -25,7 +25,7 @@ export const RetranslatePanel: FC<{
         のワークフローを単発実行)。
       </p>
       <form
-        method="POST"
+        method="post"
         action={`/e/${slug}/q/${qid}/retranslate`}
         class="flex items-center gap-2"
       >

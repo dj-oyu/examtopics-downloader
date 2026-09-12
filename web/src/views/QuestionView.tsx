@@ -130,7 +130,7 @@ export const QuestionView: FC<QuestionViewProps> = ({
           )}
 
           <form
-            method="POST"
+            method="post"
             action={`/e/${slug}/q/${q.id}/attempt`}
             class="space-y-1 pt-2"
           >
