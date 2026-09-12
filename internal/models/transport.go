@@ -1,8 +1,8 @@
 package models
 
 import (
-	"net/http"
 	"examtopics-downloader/internal/constants"
+	"net/http"
 )
 
 // AuthTransport adds Bearer token authentication to requests
@@ -19,12 +19,12 @@ func (a *AuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // OptimizedTransport returns a high-performance HTTP transport
 func OptimizedTransport() *http.Transport {
 	return &http.Transport{
-		MaxIdleConns:        constants.MaxIdleConns,
-		MaxIdleConnsPerHost: constants.MaxIdleConnsPerHost,
-		MaxConnsPerHost:     constants.MaxConnsPerHost,
-		IdleConnTimeout:     constants.IdleConnTimeout,
-		DisableCompression:  false,
-		DisableKeepAlives:   false,
+		MaxIdleConns:          constants.MaxIdleConns,
+		MaxIdleConnsPerHost:   constants.MaxIdleConnsPerHost,
+		MaxConnsPerHost:       constants.MaxConnsPerHost,
+		IdleConnTimeout:       constants.IdleConnTimeout,
+		DisableCompression:    false,
+		DisableKeepAlives:     false,
 		TLSHandshakeTimeout:   constants.TLSHandshakeTimeout,
 		ResponseHeaderTimeout: constants.ResponseHeaderTimeout,
 		ExpectContinueTimeout: constants.ExpectContinueTimeout,

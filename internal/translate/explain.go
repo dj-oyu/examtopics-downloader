@@ -106,17 +106,17 @@ type ThreadMessage struct {
 
 // ThreadQuestion matches the question payload nested inside fetch_thread.
 type ThreadQuestion struct {
-	ID              int64           `json:"id"`
-	Exam            string          `json:"exam"`
-	Topic           int             `json:"topic"`
-	QuestionNumber  int             `json:"question_number"`
-	URL             *string         `json:"url,omitempty"`
-	SuggestedAnswer string          `json:"suggested_answer"`
-	QuestionText    string          `json:"question_text"`
-	QuestionTextJa  *string         `json:"question_text_ja,omitempty"`
-	ExplanationJa   *string         `json:"explanation_ja,omitempty"`
-	Comments        *string         `json:"comments,omitempty"`
-	Choices         []ThreadChoice  `json:"choices"`
+	ID              int64          `json:"id"`
+	Exam            string         `json:"exam"`
+	Topic           int            `json:"topic"`
+	QuestionNumber  int            `json:"question_number"`
+	URL             *string        `json:"url,omitempty"`
+	SuggestedAnswer string         `json:"suggested_answer"`
+	QuestionText    string         `json:"question_text"`
+	QuestionTextJa  *string        `json:"question_text_ja,omitempty"`
+	ExplanationJa   *string        `json:"explanation_ja,omitempty"`
+	Comments        *string        `json:"comments,omitempty"`
+	Choices         []ThreadChoice `json:"choices"`
 }
 
 // ThreadChoice mirrors the choices entries inside fetch_thread.

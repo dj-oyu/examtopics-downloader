@@ -1,11 +1,11 @@
 package tests
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
-	"path/filepath"
-	"fmt"
 	"testing"
 
 	"examtopics-downloader/internal/fetch"
@@ -14,6 +14,7 @@ import (
 )
 
 var links []models.QuestionData
+
 func TestGetAllPages(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test with -short flag (requires network)")
@@ -81,8 +82,8 @@ func TestWriteDataVariants(t *testing.T) {
 
 	baseName := "write_test"
 	tests := []struct {
-		fileType string
-		ext      string
+		fileType     string
+		ext          string
 		checkContent bool
 	}{
 		{"md", ".md", true},

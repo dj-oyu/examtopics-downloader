@@ -228,7 +228,7 @@ func TestWriter_UpsertQuestion_ReplacesDiscussion(t *testing.T) {
 	}
 	rec := &QuestionRecord{
 		Exam: "X", Topic: 1, QuestionNumber: 1,
-		QuestionText:    "Q?", SuggestedAnswer: "A",
+		QuestionText: "Q?", SuggestedAnswer: "A",
 		URL:     "https://example.com/q-disc",
 		Choices: map[string]string{"A": "x"},
 		Discussion: []DiscussionRow{
