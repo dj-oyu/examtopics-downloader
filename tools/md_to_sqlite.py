@@ -3,7 +3,34 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""Parse examtopics-downloader markdown output into a SQLite database."""
+"""Parse examtopics-downloader markdown output into a SQLite database.
+
+Two Markdown layouts are produced by the Go side and both — including a mix of
+them inside one file — must parse:
+
+* manual/live scrape (``utils.WriteData`` after ``fetch.GetAllPages``)::
+
+      ## Exam 010-160 topic 1 question 23 discussion
+      ...
+      [All 010-160 Questions]
+      <question text>
+      A. choice
+      **Answer: D**
+
+* GitHub-cache path (``fetch.ConvertCachedJSON``)::
+
+      ## Examtopics AWS Certified AI Practitioner AIF C01_28 question #1
+      <question text>
+      Suggested Answer: A 🗳️
+      **A:** choice
+      **Answer: A**
+
+  The cache layout carries no ``topic``/``Question #:`` header block and no
+  ``[All ... Questions]`` marker; ``topic`` is recovered from the question URL
+  and ``question_number`` from the ``question #N`` in the title. HOTSPOT
+  questions legitimately have an empty ``**Answer: **`` and are kept with NULL
+  answers rather than dropped.
+"""
 
 from __future__ import annotations
 
@@ -15,19 +42,41 @@ from pathlib import Path
 
 SEPARATOR = "-" * 40
 
+# --- layout detection -------------------------------------------------------
+
+# manual/live layout
 TITLE_RE = re.compile(
-    r"^##\s+Exam\s+(.+?)\s+topic\s+(\d+)\s+question\s+(\d+)\s+discussion",
+    r"^##\s+Exam\s+(.+?)\s+topic\s+(\d+)\s+question\s+(\d+)\s+discussion\s*$",
     re.MULTILINE,
 )
+# cache layout ("## Examtopics <exam>_<shard> question #N")
+CACHE_TITLE_RE = re.compile(
+    r"^##\s+Examtopics\s+(.+?)\s+question\s*#\s*(\d+)\s*$",
+    re.MULTILINE,
+)
+
 QNUM_RE = re.compile(r"Question\s*#:\s*(\d+)")
 TOPIC_RE = re.compile(r"Topic\s*#:\s*(\d+)")
 ALL_Q_RE = re.compile(r"\[All [^\]]+ Questions\]")
-SUGGESTED_RE = re.compile(r"Suggested Answer:\s*([A-Z]+)")
-CHOICE_RE = re.compile(r"^([A-Z])\.\s+(.+?)\s*$", re.MULTILINE)
-ANSWER_RE = re.compile(r"\*\*Answer:\s*([A-Z]+)\*\*")
+SUGGESTED_RE = re.compile(r"Suggested Answer:\s*([A-Z]+)", re.MULTILINE)
+# Choices come as "A. text" (manual) or "**A:** text" (cache — the bold closes
+# after the colon). The optional bold markers keep "**Answer: ...**" and
+# "**Timestamp: ...**" from matching, since those have no "."/":" directly
+# after the single letter.
+CHOICE_RE = re.compile(
+    r"^\s*(?:\*\*)?([A-Z])(?:\*\*)?\s*[:.]\s*(?:\*\*)?\s*(.+?)\s*(?:\*\*)?\s*$",
+    re.MULTILINE,
+)
+# The answer can legitimately be empty (HOTSPOT questions) — hence ``*``.
+ANSWER_RE = re.compile(r"\*\*Answer:\s*([A-Z]*)\s*\*\*")
 TIMESTAMP_RE = re.compile(r"\*\*Timestamp:\s*(.+?)\*\*")
 URL_RE = re.compile(r"\[View on ExamTopics\]\((.+?)\)")
 COMMENTS_RE = re.compile(r"^Comments:\s*(.*)$", re.MULTILINE)
+
+TOPIC_IN_URL_RE = re.compile(r"topic-(\d+)")
+# Shard/page suffix callers hand us, in both the raw ("X_5.json?ref=main") and
+# the already-transformed ("X_5") form.
+SHARD_SUFFIX_RE = re.compile(r"(_\d+)?(\.json)?(\?ref=main)?$")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS questions (
@@ -87,38 +136,72 @@ def leading_letters(value: str) -> str:
     return m.group(1) if m else ""
 
 
+def topic_from_url(url: str | None) -> int:
+    """Mirror utils.ExtractTopicNum: the integer after 'topic-' in the URL."""
+    if not url:
+        return 0
+    m = TOPIC_IN_URL_RE.search(url)
+    return int(m.group(1)) if m else 0
+
+
+def exam_from_cache_title(raw_name: str) -> str:
+    """Mirror utils.DeriveExamDisplay for the cache layout's title.
+
+    The title carries the transformed cache filename, e.g.
+    ``AWS Certified AI Practitioner AIF C01_28`` (page shard suffix kept).
+    The SQLite-direct writer stores the shard-less display name
+    (``AWS Certified AI Practitioner AIF C01``) — both paths must agree.
+    """
+    s = raw_name.split("?")[0]
+    s = SHARD_SUFFIX_RE.sub("", s)
+    s = s.replace("-", " ")
+    return " ".join(s.split())
+
+
 def parse_block(block: str) -> dict | None:
     title_m = TITLE_RE.search(block)
-    if not title_m:
+    cache_m = None if title_m is not None else CACHE_TITLE_RE.search(block)
+    if title_m is None and cache_m is None:
         return None
 
-    exam = title_m.group(1).strip()
-    topic_from_title = int(title_m.group(2))
-    qnum_from_title = int(title_m.group(3))
+    url_m = URL_RE.search(block)
+    url = url_m.group(1).strip() if url_m else None
+    suggested_m = SUGGESTED_RE.search(block)
+    answer_m = ANSWER_RE.search(block)
+
+    if title_m is not None:
+        layout = "manual"
+        exam = title_m.group(1).strip()
+        topic_fallback = int(title_m.group(2))
+        qnum_fallback = int(title_m.group(3))
+        # Question text starts after the "[All ... Questions]" marker; older /
+        # header-only dumps fall back to the end of the "Topic #: N" line.
+        marker = ALL_Q_RE.search(block) or TOPIC_RE.search(block)
+        text_start = marker.end() if marker else title_m.end()
+    else:
+        layout = "cache"
+        assert cache_m is not None
+        exam = exam_from_cache_title(cache_m.group(1))
+        topic_fallback = topic_from_url(url)
+        qnum_fallback = int(cache_m.group(2))
+        text_start = cache_m.end()
 
     qnum_m = QNUM_RE.search(block)
     topic_m = TOPIC_RE.search(block)
-    qnum = int(qnum_m.group(1)) if qnum_m else qnum_from_title
-    topic = int(topic_m.group(1)) if topic_m else topic_from_title
+    qnum = int(qnum_m.group(1)) if qnum_m else qnum_fallback
+    topic = int(topic_m.group(1)) if topic_m else topic_fallback
 
-    all_q = ALL_Q_RE.search(block)
-    suggested_m = SUGGESTED_RE.search(block)
-    answer_m = ANSWER_RE.search(block)
-    if not all_q or (suggested_m is None and answer_m is None):
-        return None
+    # The question text runs from the layout's anchor up to the Suggested
+    # Answer line (canonical) or the answer line; the choice block starts right
+    # after whichever of the two is present.
+    if suggested_m is not None and suggested_m.start() > text_start:
+        text_end = suggested_m.start()
+    elif answer_m is not None and answer_m.start() > text_start:
+        text_end = answer_m.start()
+    else:
+        text_end = len(block)
 
-    # Canonical layout (current Go writer): question text, `Suggested Answer:
-    # BD 🗳️`, choices A–E, `**Answer: BD**`. Writers that predate the voted-
-    # answers path emit no Suggested Answer line, so the region after the
-    # question text then also contains the choice lines — split on the first
-    # choice line in that case.
-    text_end = (
-        suggested_m.start()
-        if suggested_m is not None
-        else (answer_m.start() if answer_m is not None else len(block))
-    )
-    body_region = block[all_q.end() : text_end]
-
+    body_region = block[text_start:text_end]
     first_choice = CHOICE_RE.search(body_region)
     question_text = (
         body_region[: first_choice.start()] if first_choice else body_region
@@ -126,29 +209,43 @@ def parse_block(block: str) -> dict | None:
 
     if suggested_m is not None:
         choices_start = suggested_m.end()
-        suggested_answer = suggested_m.group(1)
+        suggested_raw = suggested_m.group(1)
     else:
-        choices_start = all_q.end() + (first_choice.start() if first_choice else 0)
-        # Fall back to `**Answer:**`, which is the only answer signal present.
-        suggested_answer = leading_letters(answer_m.group(1))
+        # No Suggested Answer line: the region after the question text holds the
+        # choices, and `**Answer:**` is the only answer signal available.
+        choices_start = text_start + (first_choice.start() if first_choice else 0)
+        suggested_raw = answer_m.group(1) if answer_m is not None else ""
 
-    choices_end = answer_m.start() if answer_m is not None else len(block)
-    choices_region = block[choices_start:choices_end]
-    choices = [(label, text.strip()) for label, text in CHOICE_RE.findall(choices_region)]
+    choices_end = (
+        answer_m.start()
+        if answer_m is not None and answer_m.start() > choices_start
+        else len(block)
+    )
+    choices = [
+        (label, text.strip().rstrip("*").strip())
+        for label, text in CHOICE_RE.findall(block[choices_start:choices_end])
+    ]
+
+    # HOTSPOT questions have no answer and no choices, only text + images: keep
+    # the row (with NULL answers) instead of silently dropping the question.
+    if not question_text and not choices:
+        return None
 
     ts_m = TIMESTAMP_RE.search(block)
-    url_m = URL_RE.search(block)
     cmt_m = COMMENTS_RE.search(block)
 
     return {
+        "layout": layout,
         "exam": exam,
         "topic": topic,
         "question_number": qnum,
         "question_text": question_text,
-        "suggested_answer": suggested_answer,
-        "confirmed_answer": leading_letters(answer_m.group(1)) if answer_m else None,
+        "suggested_answer": leading_letters(suggested_raw) or None,
+        "confirmed_answer": (
+            leading_letters(answer_m.group(1)) or None if answer_m is not None else None
+        ),
         "timestamp": ts_m.group(1).strip() if ts_m else None,
-        "url": url_m.group(1).strip() if url_m else None,
+        "url": url,
         "comments": cmt_m.group(1).strip() if cmt_m else None,
         "choices": choices,
     }
