@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guide for AI coding agents (Claude Code, Codex CLI, Gemini CLI, Aider, etc.) working in
+Guide for AI coding agents (Claude Code, Codex CLI, Aider, etc.) working in
 this fork of `examtopics-downloader`. Covers the post-processing pipeline added on top
 of the upstream Go scraper, the schema invariants you must respect, and known
 upstream bugs to compensate for.
@@ -9,8 +9,8 @@ upstream bugs to compensate for.
 
 | Path | Purpose | Owned by |
 |------|---------|----------|
-| `cmd/`, `internal/`, `tests/` | Upstream Go scraper: examtopics → Markdown | upstream |
-| `tools/` | Python (uv-run) post-processing: SQLite + translation + audits | this fork |
+| `cmd/`, `internal/`, `tests/` | Upstream Go scraper: examtopics → Markdown (multi-file `cmd` package: `go run ./cmd <subcommand>`) | upstream |
+| `tools/` | Python (stdlib-only, uv-run) post-processing: SQLite + translation + audits | this fork |
 | `web/` | Bun + Hono SSR Web UI for studying | this fork |
 | `examples/` | Sample upstream output (kept as-is) | upstream |
 | `*.db`, root `*.md`, root `*.json` | Scraped data — **gitignored, not redistributable** | local only |
@@ -19,13 +19,13 @@ upstream bugs to compensate for.
 
 ```
 [examtopics.com]
-      | go run ./cmd/main.go -p amazon -s <exam-id> -c -save-links -o <exam>.md
+      | go run ./cmd fetch -p amazon -s <exam-id> -c -save-links -o <exam>.md
       v
    <exam>.md
       | uv run tools/md_to_sqlite.py <exam>.md -o <exam>.db
       v
    <exam>.db   (questions, choices, _ja columns reserved)
-      | Gemini exam-translator skill orchestrates tools/translate.py
+      | exam-translator skill (client-neutral) orchestrates tools/translate.py
       | uv run tools/audit_*.py -d <exam>.db
       v
    <exam>.db   (translations, attempts, explanation threads)
@@ -34,18 +34,21 @@ upstream bugs to compensate for.
    Browser study UI + agent dialogue at http://localhost:3000
 ```
 
-## End-to-end workflow: 問題取得 → SQLite → 和訳 (Gemini skill 前提)
+## End-to-end workflow: 問題取得 → SQLite → 和訳 (client-neutral skill)
 
 This is the canonical happy path for adding a new AWS exam to the studio. Step 3
-is orchestrated by the **`exam-translator`** skill (`.gemini/skills/exam-translator.md`)
-when driven by a Gemini-based agent. Agents on other runtimes (Claude Code, Codex
-CLI, Aider) can still drive `tools/translate.py` directly using the same JSON
-contract — the skill is an *automation layer*, not a hard requirement.
+is orchestrated by the **`exam-translator`** skill: the master lives at
+`skills/exam-translator.md`, `go generate ./...` mirrors it into
+`internal/translate/assets/` (for `//go:embed`) and into the Claude Code layout,
+and `examtopicsdl translate -client <name> -dry-run` materializes it for whichever
+LLM CLI you use. Any agent runtime that can run shell commands can drive it, and
+`tools/translate.py` can always be driven directly with the same JSON contract —
+the skill is an *automation layer*, not a hard requirement.
 
 ### Step 0. Confirm the exam slug
 
 ```bash
-go run ./cmd/main.go -p amazon -exams
+go run ./cmd -p amazon -exams
 # pick the lowercase ID found in discussion-link slugs (e.g. soa-c03, dva-c02)
 ```
 
@@ -115,42 +118,52 @@ Creates `questions`, `choices`, `discussion` and their indexes. `_ja` columns ar
 nullable and filled in Step 3. `--append` deduplicates by `url` if you want to
 merge multiple dumps into one DB.
 
-### Step 3. 和訳オーケストレーション (Gemini exam-translator skill)
+### Step 3. 和訳オーケストレーション (client-neutral exam-translator skill)
 
-Activate the skill from any Gemini-based agent. The skill mandates execution mode
-and self-paced batching, so a single user prompt drives the run to completion:
+Activate the skill from any runtime that can spawn a worker session (Claude Code
+subagents, Codex, or a fresh non-interactive session). The skill mandates execution
+mode and self-paced batching, so a single user prompt drives the run to completion:
 
 ```text
 agent prompt:
-  Activate skill `exam-translator` and complete the translation of <exam-id>.db.
+  Follow skills/exam-translator.md and complete the translation of <exam-id>.db.
   Aim for questions_pending: 0. Report only range summaries.
 ```
 
-What the skill does on your behalf (encoded in `.gemini/skills/exam-translator/SKILL.md`):
+What the skill does on your behalf (`skills/exam-translator.md`, mirrored by
+`go generate` to `internal/translate/assets/exam-translator.md` and
+`.claude/skills/exam-translator/SKILL.md`):
 
 1. **Status probe.** `uv run tools/translate.py -d <exam-id>.db status` — captures
    `questions_total` / `questions_pending` baseline.
-2. **Subagent delegation in EXECUTION MODE.** Spawns the dedicated
-   `exam-translator-worker` subagent (defined at
-   `.gemini/agents/exam-translator-worker.md`, `max_turns: 200`). The agent
-   definition embeds the translation guidelines:
+2. **Worker delegation in EXECUTION MODE.** Spawns the dedicated
+   `exam-translator-worker` subagent (template at
+   `agents/exam-translator-worker.md`, materialized to `.claude/agents/`). The
+   worker definition embeds the translation guidelines:
    - AWS service names stay in English (`Amazon S3`, `AWS Lambda`, `Amazon Aurora`).
    - 平叙文 (である調), not 敬体 (です・ます).
    - `(複数選択)` prefix on `question_text_ja` when `LENGTH(suggested_answer) > 1`.
    - Choices A–E consistent in length and tone.
    - `explanation_ja`: 2–3 sentences covering 正解の根拠 + 主要な不正解の根拠,
      drawing on the `comments` column when it contributes counter-arguments.
-3. **UTF-8-safe writes on Windows.** All bulk writes go through
-   `.gemini/skills/exam-translator/scripts/batch_helper.py`, which reads a temp
-   JSON file as raw bytes and pipes it to `translate.py bulk-save` — sidesteps
-   PowerShell's default US-ASCII pipe corruption (see "Encoding / Windows tips").
-4. **Self-paced re-invocation.** When a subagent reaches its turn/token limit,
-   the orchestrator inspects the reported ID range and re-invokes for the next
-   batch without prompting the user.
-5. **Final validation.** Loops `status` until `questions_pending == 0`, then
-   samples 3–5 rows to confirm no mojibake.
+3. **UTF-8-safe writes on Windows.** Stage the batch as `_staging.json` and pipe
+   it with `cat _staging.json | uv run tools/translate.py -d <exam>.db bulk-save`
+   — a temp file plus redirect, never `echo` through PowerShell's US-ASCII pipe
+   (see "Encoding / Windows tips").
+4. **Self-paced re-invocation.** When a worker reaches its turn/token limit, the
+   orchestrator inspects the reported ID range and re-invokes for the next batch
+   without prompting the user.
+5. **Final validation.** Loops `status` until `questions_pending == 0`, samples
+   3–5 rows to confirm no mojibake, then runs the Step 4 audits.
 
-For non-Gemini agents (Claude Code etc.), drive the translation loop manually:
+Single-row alternative (no worker, no batch):
+`examtopicsdl translate retranslate -db <exam>.db -qid <id> -client claude` reads
+one row, spawns the configured LLM CLI, validates the returned JSON and updates
+`*_ja`. `-client` accepts `claude | codex | exec` — **gemini-cli support was
+removed** (upstream development wound down); configuration lives in
+`tools.translate.{client,model,bin}` of `config.json`.
+
+For a runtime with no subagent mechanism, drive the loop manually:
 
 ```
 status -> next -> (translate internally) -> echo '{...}' | save <id> -> repeat
@@ -408,7 +421,7 @@ The CLI rejects payloads that violate the grounding rule for the chosen code:
 // reason_code='translation' example — fixes a misleading 訳語
 {
   "content": "「冗長性」は redundancy ではなく resiliency の訳でした。修正します。",
-  "author": "gemini-code",
+  "author": "claude-code",
   "reason_code": "translation",
   "translation_fix": {
     "question_text_ja": "...修正後の設問文...",
@@ -509,8 +522,12 @@ the lowercase exam ID (`soa-c03.db`, `sap-c02.db`, `dva-c02.db`, ...).
    (already done via `??` in views.tsx). Don't `INSERT` empty strings to fake
    completeness — leave NULL.
 
-4. **`questions.confirmed_answer` may be truncated.** See "Upstream gotchas" below.
-   Treat `suggested_answer` as the source of truth for multi-select.
+4. **Answers: `suggested_answer` is the community-voted majority; `confirmed_answer`
+   is the same question's `**Answer:**` line.** On a fresh scrape both carry the
+   full letter set (the old first-byte truncation is gone — see "Answers and the
+   two answer fields" below). Only the checked-in `examples/` dumps are still
+   truncated (`CD` → `C`), so treat `suggested_answer` as the source of truth for
+   multi-select and when mixing old dumps into one DB.
 
 ## Upstream gotchas (engineering knowledge)
 
@@ -521,12 +538,13 @@ pass. Two consequences:
 
 - ✅ `-s soa-c03` works (current discussion links contain that ID).
 - ❌ `-s soa-c02` returns 0 results — that exam ID is no longer present on
-  examtopics. The CLI exits 0 with `Found 0 unique matching links:` and the output
-  file contains only the markdown header. There is no error to catch.
+  examtopics. The run ends with `Found 0 unique matching links:` and **now exits 1
+  with an actionable message instead of writing a header-only `.md`** (before, it
+  exited 0 and reported success).
 
-**Always:** run `go run ./cmd/main.go -p amazon -exams` first to confirm the slug,
-then verify post-scrape that stdout contained `Found N>0 unique matching links` and
-that the output file is non-trivial (`wc -l > 4`).
+**Always:** confirm the slug with `go run ./cmd -p amazon -exams` first,
+then verify post-scrape that stdout contained `Found N>0 unique matching links`
+and that the output file is non-trivial (`wc -l > 4`).
 
 ### Cache vs manual scrape paths
 
@@ -539,26 +557,107 @@ failed.`).
 - **Manual path** lifts the entire `.discussion-container` text and concatenates —
   comments end up as one long blob. Lower quality for downstream comment parsing.
 
-Pass `-t <GitHub PAT>` to raise the GitHub API limit and bias toward the cache path.
+**A PAT is mandatory in practice, not an optimisation.** The cache listing lives at
+`api.github.com/repos/thatonecodes/examtopics-data/contents/<Provider>` (provider
+name = `CapitalizeFirstLetter(lowercase -p value)`, so directories are `Amazon`,
+`Google`, `Linux-foundation`, ...), one request per shard file
+(`<Exam-Name>_<shard>.json`). Anonymous GitHub API access is 60 requests/hour per
+IP and the API answers **403** once it is gone, which used to drop whole files
+silently: a real 31-file / AIF-C01 run returned 135 of 154 questions and still
+printed "Successfully saved 135 questions". With `GH_PAT` set (`.env`, see below)
+the budget is 5000/hour and the same run returns all 154. Provider directories that
+were never mirrored (e.g. `Lpi`, the one the integration test uses) **404** — that
+is a normal cache miss that falls back to manual scraping, not an error.
 
-### Multi-select answer truncation (`internal/fetch/scraper.go:35`)
+### Answers and the two answer fields
 
-The scraper takes only the first byte of `.correct-answer`:
+`internal/fetch/scraper.go:getDataFromLink` reads the community-voted answer from
+the `.voted-answers-tally` JSON and `cleanAnswer()` keeps the full letter sequence;
+the legacy `.correct-answer` fallback is no longer truncated either. The cache JSON
+carries two different answer fields — do not conflate them:
 
-```go
-answer = string(strings.ReplaceAll(strings.ReplaceAll(answerText, " ", ""), "\n", "")[0])
+| field | meaning | examples |
+|---|---|---|
+| `answer` | community-voted majority (identical to `answers_community`) | `A`, `BD`, `U`, `UB` |
+| `answer_ET` | ExamTopics' own answer | `A`, `DEF` |
+
+`SuggestedAnswer` is populated from `answer`, i.e. the community vote, which is what
+`audit_comments.py` cross-checks against the votes quoted in the comments. The two
+disagree on ~5% of questions (one sampled case: community `A` 100% vs `answer_ET`
+`DEF` on a "Choose three" question) — **never use `answer_ET` to overwrite
+`suggested_answer`**; if the site's own answer is wanted in the DB it needs its own
+column, and schema changes go through a migration file (see schema invariants).
+Values like `U` / `UB` are literal vote results (the poll offered a `U` option), not
+corruption.
+
+Answer-less question types (HOTSPOT / SIMULATION / FILL BLANK) keep their row with
+`suggested_answer` and `confirmed_answer` NULL — `tools/md_to_sqlite.py` used to
+drop those blocks entirely, losing the question text and images.
+
+### Cache-path Markdown layout (and why the parser reads both)
+
+`ConvertCachedJSON` writes a different body from the manual path, and both may end
+up in one file:
+
+```
+## Examtopics AWS Certified AI Practitioner AIF C01_28 question #1
+<question text>
+Suggested Answer: A 🗳️
+**A:** choice            <- the bold closes after the colon
+**Answer: A**
 ```
 
-So multi-correct questions like `BD`, `CD`, `AE`, `BE` end up as `B`, `C`, `A`, `B`
-respectively in `**Answer:**`. The MD body's `Suggested Answer: BD 🗳️` line is
-preserved fully though.
+versus the manual layout (`## Exam <id> topic N question N discussion`, an
+`[All ... Questions]` marker, `A. choice`). `tools/md_to_sqlite.py` detects the
+layout per block: on the cache path it recovers `exam` by stripping the
+`Examtopics ` wrapper and the `_<shard>(.json)?(?ref=main)?` suffix (mirroring
+`utils.DeriveExamDisplay`), `topic` from `topic-(\d+)` in the URL, and
+`question_number` from the title. Run `python3 tools/test_md_to_sqlite.py` after
+touching either writer — a cache-path dump that parses to zero rows is the failure
+mode this covers (154 blocks in, 0 rows out, before).
 
-After parsing into SQLite:
-- `suggested_answer` (parsed from `Suggested Answer:`) is **complete**.
-- `confirmed_answer` (parsed from `**Answer:**`) is **truncated** for multi-select.
+### Question numbering on the cache path
 
-Detect multi-select with `LENGTH(suggested_answer) > 1`. Always trust
-`suggested_answer` over `confirmed_answer`.
+Cache URLs have no `-question-N-discussion` segment, so the number comes from the
+cache JSON's `question_id` (the exam's own sequential number), surfaced to the
+writer via `QuestionExtras.QuestionID` and embedded in the Title as `question #N`.
+`utils.SortQuestionDataByPageNumber` orders by it and is stable, so the Markdown
+output ascends in exam order. Do **not** reintroduce a package-level counter to
+number converted rows: `ConvertCachedJSON` runs in one goroutine per cache file, a
+shared counter is a data race (`go test -race` catches it) and the numbers come out
+order-dependent and collision-prone.
+
+### HTTP failures must be retried or reported, never swallowed
+
+`internal/fetch/fetch.go:FetchURL` retries **429 and 5xx** with exponential backoff
+plus jitter and honours `Retry-After` (delta-seconds or HTTP-date, capped by
+`constants.RetryAfterCap` so a one-hour GitHub reset cannot look like a hang).
+
+- **403 is not retried** — it means a quota/bot wall, and waiting inside the same
+  run cannot help. It is logged with the URL and counted.
+- Every lost URL is counted (`fetch.FetchFailures`) and each phase logs
+  `WARNING: N fetch(es) failed during <phase> — the result is incomplete`; the CLI
+  repeats it on stderr and exits 1 when a run produced zero questions.
+- Real-world evidence for why this matters: examtopics.com 429s hard at ~2 req/s,
+  and a 37-page listing run recorded 32 failures. Before the fix such a run printed
+  `Successfully saved output ...` with a near-empty file — the shape of upstream
+  issues #11 / #12 / #16 ("missing questions", "output file empty"). If you see a
+  low `Found N unique matching links:` for a valid exam, suspect throttling before
+  suspecting the exam ID, and do not re-run in a loop: that extends the limit window.
+- Probing a provider's cache directory uses `FetchURLProbe`, which exempts 404
+  (provider never mirrored) but not 403 (real loss).
+
+### Client separation: examtopics.com must never see the GitHub token
+
+`FetchCachedLinks` upgrades the package-level `client` to an authenticated GitHub
+client when a PAT is present. **examtopics-facing code must use `siteClient`**
+(getDataFromLink, getLinksFromPage, getMaxNumPages, GetProviderExams) —
+`TestGitHubTokenNeverReachesSiteClient` pins both halves. Merging the two clients
+back (or routing a new examtopics request through `client`) sends the PAT to a
+third-party site in the `Authorization` header, which was a real bug until it was
+split.
+
+## Encoding / Windows tips
 
 ## Encoding / Windows tips
 
