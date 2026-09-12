@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+
+	"examtopics-downloader/internal/utils"
 )
 
 // FetchURL used to retry only 503. examtopics.com throttles with 429, so every
@@ -70,6 +72,37 @@ func TestFetchURL_DoesNotRetryForbiddenButCountsIt(t *testing.T) {
 	}
 	if got := FetchFailures() - before; got != 1 {
 		t.Errorf("FetchFailures delta = %d, want 1", got)
+	}
+}
+
+// FetchCachedLinks swaps the package-level `client` for an authenticated GitHub
+// client once a PAT is supplied. examtopics.com must not see that token, so the
+// HTML scrape uses `siteClient` instead — this test pins the separation.
+func TestGitHubTokenNeverReachesSiteClient(t *testing.T) {
+	var seen atomic.Value
+	seen.Store("")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.Store(r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte("<html><body><h1>ok</h1></body></html>"))
+	}))
+	defer srv.Close()
+
+	// what FetchCachedLinks does when a PAT is present
+	client = utils.NewGitHubClient("github_pat_PROBE")
+	defer func() { client = utils.NewHTTPClient() }()
+
+	if _, err := ParseHTML(srv.URL, *siteClient); err != nil {
+		t.Fatalf("ParseHTML via siteClient: %v", err)
+	}
+	if got := seen.Load().(string); got != "" {
+		t.Errorf("siteClient leaked an Authorization header: %q", got)
+	}
+
+	if _, err := ParseHTML(srv.URL, *client); err != nil {
+		t.Fatalf("ParseHTML via client: %v", err)
+	}
+	if got := seen.Load().(string); got != "Bearer github_pat_PROBE" {
+		t.Errorf("GitHub client should still send the token, got %q", got)
 	}
 }
 

@@ -21,6 +21,12 @@ import (
 
 var client = utils.NewHTTPClient()
 
+// siteClient talks to examtopics.com and is deliberately separate from `client`:
+// FetchCachedLinks swaps `client` for an authenticated GitHub client when a PAT
+// is supplied, and reusing that same client for the HTML scrape would send the
+// GitHub token to examtopics.com.
+var siteClient = utils.NewHTTPClient()
+
 // fetchFailures counts URLs that FetchURL gave up on in this process. A nil
 // body means the caller lost a page (manual path) or a whole cache file's worth
 // of questions (cache path), so runs report it instead of claiming success.
@@ -121,7 +127,7 @@ func ParseHTML(url string, client http.Client) (*goquery.Document, error) {
 
 // Fetches total number of pages
 func getMaxNumPages(url string) int {
-	doc, err := ParseHTML(url, *client)
+	doc, err := ParseHTML(url, *siteClient)
 	if err != nil {
 		log.Panicf("Failed parsing HTML for number of pages: %v", err)
 	}
@@ -143,7 +149,7 @@ func getMaxNumPages(url string) int {
 
 func GetProviderExams(providerName string) []string {
 	baseURL := fmt.Sprintf("https://www.examtopics.com/exams/%s/", providerName)
-	doc, err := ParseHTML(baseURL, *client)
+	doc, err := ParseHTML(baseURL, *siteClient)
 	if err != nil {
 		log.Fatalf("Failed to parse HTML for provider exams: %v", err)
 	}
@@ -161,7 +167,7 @@ func GetProviderExams(providerName string) []string {
 
 // Extracts matching links from a single page
 func getLinksFromPage(url string, grepStr string) []string {
-	doc, err := ParseHTML(url, *client)
+	doc, err := ParseHTML(url, *siteClient)
 	if err != nil {
 		log.Printf("Failed to parse HTML for %s: %v", url, err)
 		return nil
@@ -181,6 +187,9 @@ func getLinksFromPage(url string, grepStr string) []string {
 func FetchCachedLinks(providerName string, grepStr string, token string) []string {
 	parsedProviderName := utils.CapitalizeFirstLetter(strings.ToLower(providerName))
 	baseURL := fmt.Sprintf("https://api.github.com/repos/thatonecodes/examtopics-data/contents/%s", parsedProviderName)
+	// `client` is the GitHub-facing client only: examtopics.com traffic goes
+	// through `siteClient` (see its doc comment), so this token never leaves
+	// GitHub hosts.
 	if token != "" {
 		client = utils.NewGitHubClient(token)
 	}

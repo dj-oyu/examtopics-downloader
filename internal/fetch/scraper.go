@@ -32,7 +32,7 @@ func cleanAnswer(raw string) string {
 }
 
 func getDataFromLink(link string) *models.QuestionData {
-	doc, err := ParseHTML(link, *client)
+	doc, err := ParseHTML(link, *siteClient)
 	if err != nil {
 		log.Printf("Failed parsing HTML data from link: %v", err)
 		return nil
