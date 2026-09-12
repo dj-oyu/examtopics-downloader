@@ -16,14 +16,19 @@ import sql003 from "../../internal/sqlite/migrations/003_multihost_sync.sql" wit
 import { loadConfig } from "./config";
 import * as uuidx from "./uuidx";
 
-// dataDir is the directory we treat as the source of *.db files, and
+// dataDir() is the directory we treat as the source of *.db files, and
 // the boundary every slug must stay within (path-traversal guard).
-// Sourced from loadConfig() so the same EXAMTOPICS_DATA_DIR /
-// config.json contract drives both the Go CLI and the Bun web. The
-// previous import.meta.dir-based PROJECT_ROOT became a virtual path
-// inside `bun build --compile` outputs (§2 notice 3).
-const dataDir = loadConfig().dataDir;
-const dataDirPrefix = dataDir.endsWith(sep) ? dataDir : dataDir + sep;
+// Resolved through loadConfig() on each call rather than captured at
+// import time: `bun test` shares one process across files, and a caller
+// may repoint dataDir with resetConfigCache() + EXAMTOPICS_DATA_DIR after
+// this module has already loaded. Sourced from loadConfig() so the same
+// EXAMTOPICS_DATA_DIR / config.json contract drives both the Go CLI and
+// the Bun web; the previous import.meta.dir-based PROJECT_ROOT became a
+// virtual path inside `bun build --compile` outputs (§2 notice 3).
+// (agent.ts already resolves it per call for the same reason.)
+function dataDir(): string {
+  return loadConfig().dataDir;
+}
 const SLUG_RE = /^[A-Za-z0-9._-]+$/;
 
 type Migration = { version: number; name: string; sql: string };
@@ -288,8 +293,18 @@ function applyPendingMigrations(db: Database): void {
       .all()
       .map((r) => r.version)
   );
+  // A DB written by the Go CLI already carries version 3 while recording
+  // nothing for 001/002: the Go migration set is embedded from 003 onward,
+  // so its versions start there. Those two scripts are then superseded —
+  // replaying them rebuilds explanation_messages into its old INTEGER-PK
+  // shape and aborts on the already-present agent_session_id column, which
+  // made openDb() throw and discoverExams() skip every such DB (the UI
+  // showed "試験 DB が見つかりません" while the files sat right there).
+  // Same rule as tools/translate.py.
+  const v3Applied = applied.has(3);
   for (const m of MIGRATIONS) {
     if (applied.has(m.version)) continue;
+    if (v3Applied && m.version < 3) continue;
     db.exec("PRAGMA foreign_keys = OFF");
     try {
       db.exec("BEGIN");
@@ -327,8 +342,9 @@ function validateSlug(slug: string): void {
 
 export function slugToPath(slug: string): string {
   validateSlug(slug);
-  const p = resolve(dataDir, `${slug}.db`);
-  if (!p.startsWith(dataDirPrefix)) {
+  const dir = dataDir();
+  const p = resolve(dir, `${slug}.db`);
+  if (!p.startsWith(dir.endsWith(sep) ? dir : dir + sep)) {
     throw new InvalidSlugError(`slug escapes data dir: ${slug}`);
   }
   return p;
@@ -531,7 +547,7 @@ const sortLetters = (s: string) => s.split("").sort().join("");
 export function discoverExams(): ExamSummary[] {
   let files: string[];
   try {
-    files = readdirSync(dataDir).filter(
+    files = readdirSync(dataDir()).filter(
       (f) => f.endsWith(".db") && !f.startsWith(".")
     );
   } catch {
