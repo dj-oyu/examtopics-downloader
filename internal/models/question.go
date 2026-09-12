@@ -31,6 +31,7 @@ type QuestionData struct {
 type QuestionExtras struct {
 	ExamID            int               `json:"exam_id"`
 	IsMC              bool              `json:"is_mc"`
+	QuestionID        int               `json:"question_id"`
 	AnswerDescription string            `json:"answer_description"`
 	QuestionImages    []string          `json:"question_images"`
 	AnswerImages      []string          `json:"answer_images"`
@@ -59,6 +60,7 @@ type JSONResponse struct {
 			Choices           map[string]string `json:"choices"`
 			ID                string            `json:"id"`
 			ExamID            int               `json:"exam_id"`
+			QuestionID        int               `json:"question_id"`
 			QuestionText      string            `json:"question_text"`
 			Answer            string            `json:"answer"`
 			AnswerET          string            `json:"answer_ET"`

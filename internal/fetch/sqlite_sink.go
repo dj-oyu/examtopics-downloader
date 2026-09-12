@@ -25,9 +25,11 @@ var questionHashTitleRe = regexp.MustCompile(`question\s*#\s*(\d+)`)
 // QuestionRecord. examDisplay is the value to write into questions.exam.
 //
 // Topic and question_number are recovered from QuestionData.QuestionLink via
-// the URL helpers in internal/utils. SuggestedAnswer falls back to the legacy
-// Answer field when not explicitly set (defensive — manual path always sets
-// SuggestedAnswer now, but cache path or legacy callers might not).
+// the URL helpers in internal/utils, then from Extras.QuestionID (cache JSON's
+// own per-exam question number) and finally from a "question #N" marker in the
+// Title. SuggestedAnswer falls back to the legacy Answer field when not
+// explicitly set (defensive — manual path always sets SuggestedAnswer now, but
+// cache path or legacy callers might not).
 //
 // Choices are recovered from QuestionData.Extras when present (cache path);
 // otherwise (manual path) callers must populate the choices argument.
@@ -37,9 +39,13 @@ func QuestionDataToRecord(qd *models.QuestionData, examDisplay string, choices m
 		suggested = qd.Answer
 	}
 	qnum := utils.ExtractQuestionNum(qd.QuestionLink)
+	if qnum == 0 && qd.Extras != nil && qd.Extras.QuestionID > 0 {
+		qnum = qd.Extras.QuestionID
+	}
 	if qnum == 0 {
-		// Cache-path URLs have no `-question-N-discussion` segment; fall back
-		// to the Title's "question #N" suffix written by ConvertCachedJSON.
+		// Cache-path URLs have no `-question-N-discussion` segment and no
+		// QuestionID; fall back to the Title's "question #N" marker written by
+		// ConvertCachedJSON.
 		if m := questionHashTitleRe.FindStringSubmatch(qd.Title); m != nil {
 			fmt.Sscanf(m[1], "%d", &qnum)
 		}

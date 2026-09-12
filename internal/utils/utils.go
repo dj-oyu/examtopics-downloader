@@ -220,7 +220,7 @@ func CapitalizeFirstLetter(s string) string {
 // NewGitHubClient creates an authenticated HTTP client with optimized transport
 func NewGitHubClient(token string) *http.Client {
 	transport := models.OptimizedTransport()
-	
+
 	return &http.Client{
 		Timeout: constants.HttpTimeout,
 		Transport: &models.AuthTransport{
@@ -244,18 +244,34 @@ func GetNameFromLink(link string) string {
 	return strings.Join(strings.Fields(name), " ")
 }
 
+// SortQuestionDataByPageNumber orders cache-path results by the exam's own
+// question number (Extras.QuestionID) when the cache supplied one, falling back
+// to the page-shard number parsed out of the Title.
+//
+// The previous implementation only did the latter, but the current cache Title
+// format ("Examtopics <name>_<shard> question #N") never matches
+// ExtractNumberFromPath's "part after the first underscore is a number"
+// assumption, so every element compared equal (-1) and the output order was
+// whatever the goroutines happened to produce. The sort is stable so equal keys
+// keep their input order.
 func SortQuestionDataByPageNumber(data []models.QuestionData) []models.QuestionData {
 	sortedData := make([]models.QuestionData, len(data))
 	copy(sortedData, data)
 
-	sort.Slice(sortedData, func(i, j int) bool {
-		pageNumI := ExtractNumberFromPath(sortedData[i].Title)
-		pageNumJ := ExtractNumberFromPath(sortedData[j].Title)
-
-		return pageNumI < pageNumJ
+	sort.SliceStable(sortedData, func(i, j int) bool {
+		return questionSortKey(sortedData[i]) < questionSortKey(sortedData[j])
 	})
 
 	return sortedData
+}
+
+// questionSortKey prefers the cache JSON's question number, then the legacy
+// page-shard number embedded in the Title.
+func questionSortKey(q models.QuestionData) int {
+	if q.Extras != nil && q.Extras.QuestionID > 0 {
+		return q.Extras.QuestionID
+	}
+	return ExtractNumberFromPath(q.Title)
 }
 
 func StartTime() time.Time {

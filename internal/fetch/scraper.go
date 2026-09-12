@@ -88,7 +88,6 @@ func getDataFromLink(link string) *models.QuestionData {
 	}
 }
 
-var counter int = 0 //start counter at 1
 func getJSONFromLink(link string) []*models.QuestionData {
 	initialResp := FetchURL(link, *client)
 
@@ -129,13 +128,20 @@ func getJSONFromLink(link string) []*models.QuestionData {
 // legacy in-loop conversion this used to do inline, it ALSO populates
 //   - QuestionData.SuggestedAnswer (full multi-letter, no truncation)
 //   - QuestionData.Extras (per-poster discussion, images, IsMC, ExamID,
-//     AnswerDescription) which the SQLite-direct writer reads.
+//     QuestionID, AnswerDescription) which the SQLite-direct writer reads.
 //
 // Legacy fields (Title, Header, Answer, Comments) keep their MD-output
 // formatting, so the existing markdown writer is unaffected.
+//
+// The "question #N" in Title is the exam's own question number from the cache
+// JSON (`question_id`), falling back to the position within the file. It used
+// to come from a package-level counter incremented here, which was (a) shared
+// by the goroutines feeding this function — a data race that made the numbers
+// order-dependent and collision-prone — and (b) meaningless as a question
+// number since it just counted converted rows.
 func ConvertCachedJSON(content models.JSONResponse, name string) []*models.QuestionData {
 	var out []*models.QuestionData
-	for _, q := range content.PageProps.Questions {
+	for i, q := range content.PageProps.Questions {
 		var sb strings.Builder
 		for _, d := range q.Discussion {
 			sb.WriteString("[")
@@ -170,9 +176,13 @@ func ConvertCachedJSON(content models.JSONResponse, name string) []*models.Quest
 			})
 		}
 
-		counter++
+		questionNum := q.QuestionID
+		if questionNum <= 0 {
+			questionNum = i + 1
+		}
+
 		out = append(out, &models.QuestionData{
-			Title:           "Examtopics " + strings.ReplaceAll(name, ".json?ref=main", "") + " question #" + strconv.Itoa(counter),
+			Title:           "Examtopics " + strings.ReplaceAll(name, ".json?ref=main", "") + " question #" + strconv.Itoa(questionNum),
 			Header:          q.QuestionText,
 			Content:         strings.Join(q.QuestionImages, "\n"),
 			Questions:       []string{choicesHeader.String()},
@@ -184,6 +194,7 @@ func ConvertCachedJSON(content models.JSONResponse, name string) []*models.Quest
 			Extras: &models.QuestionExtras{
 				ExamID:            q.ExamID,
 				IsMC:              q.IsMC,
+				QuestionID:        q.QuestionID,
 				AnswerDescription: q.AnswerDescription,
 				QuestionImages:    q.QuestionImages,
 				AnswerImages:      q.AnswerImages,

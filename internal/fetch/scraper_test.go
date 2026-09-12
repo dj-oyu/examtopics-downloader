@@ -42,6 +42,7 @@ func TestConvertCachedJSON_HydratesExtrasAndSuggestedAnswer(t *testing.T) {
 		Choices           map[string]string `json:"choices"`
 		ID                string            `json:"id"`
 		ExamID            int               `json:"exam_id"`
+		QuestionID        int               `json:"question_id"`
 		QuestionText      string            `json:"question_text"`
 		Answer            string            `json:"answer"`
 		AnswerET          string            `json:"answer_ET"`
@@ -59,14 +60,14 @@ func TestConvertCachedJSON_HydratesExtrasAndSuggestedAnswer(t *testing.T) {
 		URL            string   `json:"url"`
 		Timestamp      string   `json:"timestamp"`
 	}{
-		Choices: map[string]string{"A": "first", "B": "second", "C": "third", "D": "fourth"},
-		ID:               "abc123",
-		ExamID:           24,
-		QuestionText:     "Which two services?",
-		Answer:           "BD",
-		AnswerET:         "BD",
-		Topic:            "1",
-		IsMC:             true,
+		Choices:           map[string]string{"A": "first", "B": "second", "C": "third", "D": "fourth"},
+		ID:                "abc123",
+		ExamID:            24,
+		QuestionText:      "Which two services?",
+		Answer:            "BD",
+		AnswerET:          "BD",
+		Topic:             "1",
+		IsMC:              true,
 		AnswerDescription: "B and D are correct because ...",
 		Discussion: []struct {
 			Content     string `json:"content"`

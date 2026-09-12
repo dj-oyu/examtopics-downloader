@@ -7,6 +7,51 @@ import (
 	"examtopics-downloader/internal/models"
 )
 
+// question_number resolution order: the URL's own "-question-N-" segment wins
+// (manual path), then the cache JSON's question_id, then the Title marker.
+func TestQuestionDataToRecord_QuestionNumberPreference(t *testing.T) {
+	cases := []struct {
+		name string
+		qd   *models.QuestionData
+		want int
+	}{
+		{
+			name: "manual URL number wins over Extras",
+			qd: &models.QuestionData{
+				Title:        "Exam 010-160 topic 1 question 7 discussion",
+				QuestionLink: "https://www.examtopics.com/discussions/lpi/view/1-exam-010-160-topic-1-question-7-discussion/",
+				Extras:       &models.QuestionExtras{QuestionID: 99},
+			},
+			want: 7,
+		},
+		{
+			name: "cache JSON question_id when the URL has none",
+			qd: &models.QuestionData{
+				Title:        "Examtopics AWS Certified AI Practitioner AIF C01_9 question #145",
+				QuestionLink: "https://www.examtopics.com/discussions/amazon/view/150663-exam-aws-certified-ai-practitioner-aif-c01-topic-1-question/",
+				Extras:       &models.QuestionExtras{QuestionID: 145},
+			},
+			want: 145,
+		},
+		{
+			name: "title marker when Extras are absent",
+			qd: &models.QuestionData{
+				Title:        "Examtopics AWS Certified AI Practitioner AIF C01_9 question #33",
+				QuestionLink: "https://www.examtopics.com/discussions/amazon/view/150663-exam-aws-certified-ai-practitioner-aif-c01-topic-1-question/",
+			},
+			want: 33,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := QuestionDataToRecord(tc.qd, "X", map[string]string{"A": "x"})
+			if rec.QuestionNumber != tc.want {
+				t.Errorf("QuestionNumber = %d, want %d", rec.QuestionNumber, tc.want)
+			}
+		})
+	}
+}
+
 // Cache JSON URLs lack the `-question-N-discussion` segment, so URL-based
 // extraction returns 0. The cache path's Title carries "question #N", which
 // must be used as the fallback for question_number.

@@ -1,6 +1,48 @@
 package utils
 
-import "testing"
+import (
+	"testing"
+
+	"examtopics-downloader/internal/models"
+)
+
+// The cache path writes Titles of the form
+// "Examtopics <name>_<shard> question #N", which the legacy page-shard parser
+// (ExtractNumberFromPath) cannot read — every element compared equal and the
+// output order was arbitrary. Ordering must come from the cache JSON's
+// question_id when available, and the sort must be stable.
+func TestSortQuestionDataByPageNumber_PrefersQuestionID(t *testing.T) {
+	in := []models.QuestionData{
+		{Title: "Examtopics Foo_3 question #9", Extras: &models.QuestionExtras{QuestionID: 9}},
+		{Title: "Examtopics Foo_1 question #3", Extras: &models.QuestionExtras{QuestionID: 3}},
+		{Title: "Examtopics Foo_2 question #6", Extras: &models.QuestionExtras{QuestionID: 6}},
+	}
+
+	got := SortQuestionDataByPageNumber(in)
+	want := []int{3, 6, 9}
+	for i, q := range got {
+		if q.Extras.QuestionID != want[i] {
+			t.Fatalf("position %d: got question_id %d, want %d", i, q.Extras.QuestionID, want[i])
+		}
+	}
+	// The caller's slice must not be reordered in place.
+	if in[0].Extras.QuestionID != 9 {
+		t.Error("SortQuestionDataByPageNumber must not mutate its input")
+	}
+}
+
+// Without Extras it falls back to the legacy "_<shard>.json" title form.
+func TestSortQuestionDataByPageNumber_FallsBackToShardSuffix(t *testing.T) {
+	in := []models.QuestionData{
+		{Title: "Examtopics Foo_10.json question #1"},
+		{Title: "Examtopics Foo_2.json question #1"},
+	}
+
+	got := SortQuestionDataByPageNumber(in)
+	if got[0].Title != "Examtopics Foo_2.json question #1" {
+		t.Errorf("expected shard 2 first, got %q", got[0].Title)
+	}
+}
 
 func TestExtractQuestionNum(t *testing.T) {
 	cases := []struct {
