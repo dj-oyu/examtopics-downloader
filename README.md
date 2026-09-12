@@ -35,6 +35,7 @@ The first CLI invocation generates a `hostId` and writes it to a per-user `confi
 | `examtopicsdl sync snapshot -d <db> -o <out>` | `VACUUM INTO` a peer-safe snapshot. |
 | `examtopicsdl sync merge -d <local> --from <peer>` | Pull the peer's append-only rows + LWW thread updates. |
 | `examtopicsdl sync content -d <local> --from <master>` | Replace `questions` / `choices` / `discussion` from the master DB. |
+| `examtopicsdl sync translations -d <local> --from <peer> [--prefer local\|peer] [--dry-run]` | Pull only the `*_ja` translation columns from a peer, additively. |
 | `examtopicsdl providers` | Print the known scraper provider list as JSON. |
 | `examtopicsdl config` | Print the resolved runtime configuration. |
 | `examtopicsdl version` | Print the version embedded at build time. |
@@ -129,6 +130,27 @@ examtopicsdl sync merge -d C:/data/saa-c03.db --from C:/data/incoming-sbc-a.db
 ```
 
 `sync merge` is **idempotent** — running it twice on the same peer snapshot is a no-op. `sync snapshot` uses `VACUUM INTO` so the resulting file is consistent regardless of WAL state.
+
+### Translations across machines (`sync translations`)
+
+`sync content` replaces `questions` / `choices` / `discussion` wholesale, so it discards any translation a peer produced, and `sync merge` carries only the append-only attempt / thread / message rows. Translating on more than one machine therefore needs a third, additive path:
+
+```bash
+# laptop B translated questions 1-40; pull that work into laptop A
+examtopicsdl sync translations -d ~/data/saa-c03.db --from /tmp/incoming-b.db
+# report only:
+examtopicsdl sync translations -d ~/data/saa-c03.db --from /tmp/incoming-b.db --dry-run
+```
+
+Per field (`question_text_ja`, `explanation_ja`, `choices.text_ja`, matched by question `url` + choice `label`):
+
+- empty here + non-empty on the peer → take the peer's wording (fill)
+- non-empty on both, identical → nothing
+- non-empty on both, different → **conflict**: this DB's wording is kept and the conflict is listed, unless `--prefer peer` is given
+
+It never deletes and never adds questions, so running it in both directions converges and re-running is a no-op once the two sides agree. `bulk-save` writes the `*_ja` columns and no version column, so a conflict cannot be resolved by "newest wins" — read the list and pick with `--prefer peer` where the other machine's wording is better.
+
+Run it in the same 母艦/peer cycle as the other subcommands, and after a `sync content` on a peer re-derive the answer verdicts there (`uv run tools/answer_verdict.py -d <db> --apply`) — they are computed from the community votes and are not part of any sync payload.
 
 ### NTP requirement
 
