@@ -63,7 +63,7 @@ cp .env.example .env && $EDITOR .env
 
 # every run: load the env, then scrape
 set -a; source .env; set +a
-go run ./cmd/main.go -p amazon -s <exam-id> -c -save-links \
+go run ./cmd -p amazon -s <exam-id> -c -save-links \
                      -t "$GH_PAT" -o <exam-id>.md
 # -c: include discussion comments (REQUIRED for high-quality explanation_ja)
 # -t: GitHub PAT — see "PAT recommended" rationale below
