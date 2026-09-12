@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"examtopics-downloader/internal/config"
 	"examtopics-downloader/internal/quiz"
@@ -81,24 +82,55 @@ func runQuizTo(in io.Reader, out io.Writer, hostID string, args []string) int {
 			}
 			continue
 		}
-		matched, err := quiz.RecordAttempt(db, hostID, q.ID, answer, q.SuggestedAnswer)
+		matched, err := quiz.RecordAttemptAgainst(db, hostID, q.ID, answer, q.AcceptedAnswers())
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "quiz: record: %v\n", err)
 			return 1
 		}
 		asked++
-		if matched {
+		switch {
+		case matched.Ungraded:
+			w.Println("— 判定不能（正解を特定できない問題のため採点対象外）")
+		case matched.Correct:
 			correctCount++
 			w.Println("Correct.")
-		} else {
-			w.Printf("Incorrect. Suggested answer: %s\n", q.SuggestedAnswer)
+		default:
+			w.Printf("Incorrect. Accepted: %s\n", strings.Join(q.AcceptedAnswers(), " or "))
 		}
+		printVerdict(w, q)
 		if errors.Is(readErr, io.EOF) {
 			break
 		}
 	}
 	w.Printf("\nDone — %d / %d answered correctly\n", correctCount, asked)
 	return 0
+}
+
+// printVerdict reports the community split and, when the question is contested,
+// why more than one answer counts — shown only once the learner has answered.
+func printVerdict(w *utils.WriteErr, q quiz.Question) {
+	accepted := q.AcceptedAnswers()
+	switch q.Verdict.Status {
+	case "ambiguous":
+		w.Printf("この問題はコミュニティでも意見が割れています（%s のいずれも正答として扱います）\n",
+			strings.Join(accepted, " / "))
+	case "unknown":
+		w.Println("正解を特定できない問題です（採点対象外）")
+	}
+	if len(q.Verdict.Community) > 0 {
+		parts := make([]string, 0, len(q.Verdict.Community))
+		for _, v := range q.Verdict.Community {
+			mark := ""
+			if quiz.IsAccepted(v.Label, accepted) {
+				mark = "*"
+			}
+			parts = append(parts, fmt.Sprintf("%s%s %.1f%% (%d票)", v.Label, mark, v.Pct, v.Votes))
+		}
+		w.Printf("コミュニティ投票 (%d票): %s\n", q.Verdict.TotalVotes, strings.Join(parts, "  "))
+	}
+	if q.Verdict.Rationale != "" {
+		w.Printf("%s\n", q.Verdict.Rationale)
+	}
 }
 
 func stripLine(s string) string {

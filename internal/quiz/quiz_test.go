@@ -131,3 +131,111 @@ func TestLoadQuestions_ReturnsSeededRows(t *testing.T) {
 		t.Errorf("Q1 choices = %d, want 2", len(qs[0].Choices))
 	}
 }
+
+// --- answer verdicts (migration 004 / tools/answer_verdict.py) -------------
+
+func TestIsAccepted_MatchesEverySideOfTheArgument(t *testing.T) {
+	accepted := []string{"A", "D"}
+	for _, tc := range []struct {
+		selected string
+		want     bool
+	}{
+		{"A", true},
+		{"D", true},
+		{"d", true}, // case-insensitive
+		{"B", false},
+		{"", false}, // an empty selection is never right
+	} {
+		if got := IsAccepted(tc.selected, accepted); got != tc.want {
+			t.Errorf("IsAccepted(%q, %v) = %v, want %v", tc.selected, accepted, got, tc.want)
+		}
+	}
+	if !IsAccepted("DA", []string{"AD"}) {
+		t.Error("letter order must not matter")
+	}
+}
+
+func TestLoadQuestions_CarriesTheVerdict(t *testing.T) {
+	db := openTestDB(t)
+	qid := seedQuestion(t, db, "TEST", "Q", "A", map[string]string{"A": "a", "D": "d"})
+	if _, err := db.Exec(`INSERT INTO answer_verdicts
+		(question_id, status, accepted, community, total_votes, source, rationale)
+		VALUES(?, 'ambiguous', '["A","D"]',
+		       '[{"label":"D","votes":13,"pct":65},{"label":"A","votes":6,"pct":30}]',
+		       20, 'discussion', 'contest')`, qid); err != nil {
+		t.Fatalf("insert verdict: %v", err)
+	}
+	qs, err := LoadQuestions(db)
+	if err != nil {
+		t.Fatalf("LoadQuestions: %v", err)
+	}
+	if len(qs) != 1 {
+		t.Fatalf("loaded %d questions, want 1", len(qs))
+	}
+	if qs[0].Verdict.Status != "ambiguous" {
+		t.Errorf("verdict status = %q, want ambiguous", qs[0].Verdict.Status)
+	}
+	if got := qs[0].AcceptedAnswers(); len(got) != 2 || got[0] != "A" || got[1] != "D" {
+		t.Errorf("AcceptedAnswers() = %v, want [A D]", got)
+	}
+	if len(qs[0].Verdict.Community) != 2 || qs[0].Verdict.Community[0].Label != "D" {
+		t.Errorf("community = %+v, want D first", qs[0].Verdict.Community)
+	}
+	if qs[0].Verdict.TotalVotes != 20 {
+		t.Errorf("total votes = %d, want 20", qs[0].Verdict.TotalVotes)
+	}
+}
+
+func TestAcceptedAnswers_FallsBackToTheSuggestedAnswer(t *testing.T) {
+	q := Question{SuggestedAnswer: "bd"}
+	if got := q.AcceptedAnswers(); len(got) != 1 || got[0] != "BD" {
+		t.Errorf("AcceptedAnswers() = %v, want [BD] (normalised)", got)
+	}
+	empty := Question{}
+	if got := empty.AcceptedAnswers(); got != nil {
+		t.Errorf("AcceptedAnswers() = %v, want nil when there is no key at all", got)
+	}
+}
+
+func TestRecordAttemptAgainst_AcceptsEitherSide(t *testing.T) {
+	db := openTestDB(t)
+	qid := seedQuestion(t, db, "TEST", "Q", "A", map[string]string{"A": "a", "D": "d"})
+	for _, tc := range []struct {
+		selected string
+		want     bool
+	}{{"D", true}, {"A", true}, {"B", false}} {
+		out, err := RecordAttemptAgainst(db, "host", int(qid), tc.selected, []string{"A", "D"})
+		if err != nil {
+			t.Fatalf("RecordAttemptAgainst(%q): %v", tc.selected, err)
+		}
+		if out.Correct != tc.want || out.Ungraded {
+			t.Errorf("RecordAttemptAgainst(%q) = %+v, want correct=%v graded", tc.selected, out, tc.want)
+		}
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM attempts WHERE question_id=?`, qid).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Errorf("attempts rows = %d, want 3", n)
+	}
+}
+
+func TestRecordAttemptAgainst_UngradeableQuestionWritesNoRow(t *testing.T) {
+	db := openTestDB(t)
+	qid := seedQuestion(t, db, "TEST", "Q", "", map[string]string{"A": "a"})
+	out, err := RecordAttemptAgainst(db, "host", int(qid), "A", nil)
+	if err != nil {
+		t.Fatalf("RecordAttemptAgainst: %v", err)
+	}
+	if !out.Ungraded || out.Correct {
+		t.Errorf("outcome = %+v, want ungraded (not a false miss)", out)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM attempts WHERE question_id=?`, qid).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("attempts rows = %d, want 0 — an ungradeable question must not record a miss", n)
+	}
+}

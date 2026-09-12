@@ -110,13 +110,18 @@ func TestOpenWith_PreservesV2DataThroughMigration003(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	// Schema reached v3.
+	// Schema reached v3 (later migrations may have run on top; what matters here
+	// is that the destructive 003 ran and its preservation step fired).
 	var ver int
-	if err := db.QueryRow("SELECT MAX(version) FROM schema_version").Scan(&ver); err != nil {
+	if err := db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&ver); err != nil {
 		t.Fatalf("schema_version: %v", err)
 	}
-	if ver != 3 {
-		t.Fatalf("schema_version max = %d, want 3", ver)
+	var v3 int
+	if err := db.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version = 3").Scan(&v3); err != nil {
+		t.Fatalf("schema_version v3: %v", err)
+	}
+	if v3 != 1 || ver < 3 {
+		t.Fatalf("migration 003 applied = %d, max version = %d; want 003 applied and max >= 3", v3, ver)
 	}
 	// Row counts preserved.
 	if got := countRows(t, db, "attempts"); got != 5 {
