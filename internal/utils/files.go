@@ -32,6 +32,25 @@ func writeFile(filename string, content any) {
 	}
 }
 
+// bareAnswerRe matches a bare answer letter set ("A", "BD", "ACE") — the shape
+// the MD `Suggested Answer:` line and tools/md_to_sqlite.py expect.
+var bareAnswerRe = regexp.MustCompile(`^[A-Z]{1,8}$`)
+
+// mdSuggestedAnswer returns the answer to advertise on the MD `Suggested
+// Answer:` line, or "" when neither candidate is letter-shaped (legacy data
+// carries the full choice text in Answer; that belongs on `**Answer:**` only).
+// SuggestedAnswer — populated from the voted-answers JSON / cache path — wins
+// over the legacy Answer field.
+func mdSuggestedAnswer(data models.QuestionData) string {
+	for _, candidate := range []string{data.SuggestedAnswer, data.Answer} {
+		c := strings.ReplaceAll(strings.TrimSpace(candidate), " ", "")
+		if bareAnswerRe.MatchString(c) {
+			return c
+		}
+	}
+	return ""
+}
+
 func WriteData(dataList []models.QuestionData, outputPath string, commentBool bool, fileType string) {
 	file := CreateFile(outputPath)
 	defer file.Close()
@@ -49,6 +68,16 @@ func WriteData(dataList []models.QuestionData, outputPath string, commentBool bo
 
 		if data.Content != "" {
 			fmt.Fprintf(file, "%s\n\n", data.Content)
+		}
+
+		// Suggested Answer line — the community-voted answer (full letter set
+		// for multi-select). `tools/md_to_sqlite.py` parses this into the
+		// `suggested_answer` column, which the audit tooling treats as the
+		// source of truth. Omitted when the answer isn't a bare letter set
+		// (legacy/`-type json`-era data carries choice text instead), in which
+		// case the `**Answer:**` line below carries it.
+		if suggested := mdSuggestedAnswer(data); suggested != "" {
+			fmt.Fprintf(file, "Suggested Answer: %s 🗳️ \n\n", suggested)
 		}
 
 		for _, question := range data.Questions {

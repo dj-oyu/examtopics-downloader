@@ -81,6 +81,12 @@ CREATE INDEX IF NOT EXISTS idx_discussion_qid ON discussion(question_id);
 """
 
 
+def leading_letters(value: str) -> str:
+    """Extract a bare answer letter set from either 'BD' or 'B. choice text'."""
+    m = re.match(r"\s*([A-Z]+)", value or "")
+    return m.group(1) if m else ""
+
+
 def parse_block(block: str) -> dict | None:
     title_m = TITLE_RE.search(block)
     if not title_m:
@@ -97,13 +103,37 @@ def parse_block(block: str) -> dict | None:
 
     all_q = ALL_Q_RE.search(block)
     suggested_m = SUGGESTED_RE.search(block)
-    if not all_q or not suggested_m:
+    answer_m = ANSWER_RE.search(block)
+    if not all_q or (suggested_m is None and answer_m is None):
         return None
 
-    question_text = block[all_q.end() : suggested_m.start()].strip()
+    # Canonical layout (current Go writer): question text, `Suggested Answer:
+    # BD 🗳️`, choices A–E, `**Answer: BD**`. Writers that predate the voted-
+    # answers path emit no Suggested Answer line, so the region after the
+    # question text then also contains the choice lines — split on the first
+    # choice line in that case.
+    text_end = (
+        suggested_m.start()
+        if suggested_m is not None
+        else (answer_m.start() if answer_m is not None else len(block))
+    )
+    body_region = block[all_q.end() : text_end]
 
-    answer_m = ANSWER_RE.search(block, suggested_m.end())
-    choices_region = block[suggested_m.end() : answer_m.start() if answer_m else len(block)]
+    first_choice = CHOICE_RE.search(body_region)
+    question_text = (
+        body_region[: first_choice.start()] if first_choice else body_region
+    ).strip()
+
+    if suggested_m is not None:
+        choices_start = suggested_m.end()
+        suggested_answer = suggested_m.group(1)
+    else:
+        choices_start = all_q.end() + (first_choice.start() if first_choice else 0)
+        # Fall back to `**Answer:**`, which is the only answer signal present.
+        suggested_answer = leading_letters(answer_m.group(1))
+
+    choices_end = answer_m.start() if answer_m is not None else len(block)
+    choices_region = block[choices_start:choices_end]
     choices = [(label, text.strip()) for label, text in CHOICE_RE.findall(choices_region)]
 
     ts_m = TIMESTAMP_RE.search(block)
@@ -115,8 +145,8 @@ def parse_block(block: str) -> dict | None:
         "topic": topic,
         "question_number": qnum,
         "question_text": question_text,
-        "suggested_answer": suggested_m.group(1),
-        "confirmed_answer": answer_m.group(1) if answer_m else None,
+        "suggested_answer": suggested_answer,
+        "confirmed_answer": leading_letters(answer_m.group(1)) if answer_m else None,
         "timestamp": ts_m.group(1).strip() if ts_m else None,
         "url": url_m.group(1).strip() if url_m else None,
         "comments": cmt_m.group(1).strip() if cmt_m else None,

@@ -29,22 +29,22 @@ type QuestionData struct {
 // when squeezed into a Markdown round-trip. Only the SQLite-direct write path
 // reads these.
 type QuestionExtras struct {
-	ExamID            int
-	IsMC              bool
-	AnswerDescription string
-	QuestionImages    []string
-	AnswerImages      []string
-	Discussion        []DiscussionEntry
+	ExamID            int               `json:"exam_id"`
+	IsMC              bool              `json:"is_mc"`
+	AnswerDescription string            `json:"answer_description"`
+	QuestionImages    []string          `json:"question_images"`
+	AnswerImages      []string          `json:"answer_images"`
+	Discussion        []DiscussionEntry `json:"discussion"`
 }
 
 // DiscussionEntry is one comment from the cache JSON's `discussion` array.
 // UpvoteCount is intentionally string-typed because the JSON ships it as a
 // string ("3", "" for none); cast at write time.
 type DiscussionEntry struct {
-	Poster      string
-	Content     string
-	UpvoteCount string
-	Timestamp   string
+	Poster      string `json:"poster"`
+	Content     string `json:"content"`
+	UpvoteCount string `json:"upvote_count"`
+	Timestamp   string `json:"timestamp"`
 }
 
 type FileInfo struct {
