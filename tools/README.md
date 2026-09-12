@@ -55,17 +55,43 @@ uv run tools/md_to_sqlite.py saa-c03.md -o aws-exams.db
 uv run tools/md_to_sqlite.py soa-c03.md -o aws-exams.db --append   # url で重複弾き
 ```
 
-### 既知の不具合
+### 解答カラムの意味 (2026-09 時点の実データ検証済み)
 
-`internal/fetch/scraper.go:35` のバグで、マルチセレクト問題(例 `Suggested Answer: BD`)の `**Answer:**` フィールドが先頭1文字に切り詰められる。SQLite では:
+`Suggested Answer:` 行の切り詰めバグは解消済み。現在は:
 
-- `suggested_answer` ─ Markdown 本文の `Suggested Answer:` 由来。**完全な値** (例 `"BD"`)。マルチセレクト判定はこちらを使う
-- `confirmed_answer` ─ `**Answer:**` 由来。**1文字に切り詰め済**。マルチセレクトでは欠損扱い
+- `suggested_answer` ─ Markdown 本文の `Suggested Answer:` 由来。**コミュニティ投票の多数派** (キャッシュJSONの `answer`、`answers_community` と完全一致) が入る。マルチセレクト判定はこちらを使う (例 `"BD"`)
+- `confirmed_answer` ─ `**Answer:**` 由来。新しいスクレイプでは**切り詰めなしの完全値**。`examples/` の旧ダンプは切り詰められたまま (`CD` → `C`) なので、古いMarkdownを混ぜる時は `suggested_answer` を優先する
+
+キャッシュJSONには2種類の解答フィールドがあり、意味が違う:
+
+| フィールド | 意味 | 例 |
+|---|---|---|
+| `answer` | コミュニティ投票の多数派 (= `answers_community`) | `A`, `BD`, `U`, `UB` |
+| `answer_ET` | ExamTopics 側の想定解 | `A`, `DEF` |
+
+`U` / `UB` は**壊れたデータではなく文字通りの投票結果** (投票の選択肢に U が含まれる設問がある)。両者は約5%の設問で食い違うため、`answer_ET` で上書きしてはいけない — `suggested_answer` はコミュニティ票として `audit_comments.py` の照合対象になっている。食い違いの調査は `answers_community` と discussion 本文を突き合わせる。
 
 クエリでマルチセレクトを抽出:
 ```sql
 SELECT id, suggested_answer FROM questions WHERE LENGTH(suggested_answer) > 1;
 ```
+
+解答が空の設問 (HOTSPOT / SIMULATION / FILL BLANK) は `suggested_answer` / `confirmed_answer` が NULL のまま**行として残る** (以前はパース時に丸ごと破棄されていた)。
+
+### パーサの対応レイアウト
+
+Go 側は2種類のMarkdownを出力し、混在もありうる。`md_to_sqlite.py` は両方に対応し、ブロックごとに判別する:
+
+- 手動スクレイプ: `## Exam 010-160 topic 1 question 23 discussion` + `[All ... Questions]` マーカー + `A. 選択肢`
+- キャッシュ経路: `## Examtopics <exam>_<shard> question #N` + マーカーなし + `**A:** 選択肢` + `Suggested Answer:` 行
+
+キャッシュ経路では `topic` をURL (`topic-N`) から、`question_number` をキャッシュJSONの `question_id` (試験内の通し番号) から復元する。回帰テスト: `python3 tools/test_md_to_sqlite.py` (uv/venv 不要、stdlib のみ)。
+
+### レート制限まわり
+
+- GitHub contents API は匿名だと **60 req/h**。足りなくなると 403 が返り、以前は**無言で設問が欠落**していた (実測: 154問のはずが135問、19問消失)。`GH_PAT` (`.env`) を設定して 5000 req/h に上げるのが前提
+- キャッシュに無いプロバイダ (例 `Lpi`) は 404 になり、手動経路へフォールバックする。これは正常系
+- examtopics.com は **429** を返すことがある。現在は 429/5xx を指数バックオフ (+ `Retry-After`) で再試行し、失敗した件数を `WARNING: N fetch(es) failed ... the result is incomplete` として報告する。0件のまま終わった場合はエラー終了し、空のMarkdownは書かない
 
 ## Step 3. 和訳作成 (AIエージェント駆動)
 
