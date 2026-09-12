@@ -5,13 +5,15 @@ on:
     paths:
       - "**.go"
       - "go.mod"
+      - "go.sum"
+      - "tools/**"
+      - "web/**"
       - ".github/workflows/go-tests.yml"
   pull_request:
 
 jobs:
-  test:
+  go:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -19,10 +21,56 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.25"
 
       - name: Build project
         run: go build ./...
 
-      - name: Run tests
+      - name: Vet
+        run: go vet ./...
+
+      # Every package, with the race detector — the cache path fans out one
+      # goroutine per cache file, and a shared package-level counter used to make
+      # the question numbering order-dependent without any test noticing.
+      - name: Unit tests
+        run: go test -race -short ./...
+
+      - name: Integration tests (-short skips the network-backed cases)
         run: go test -v -short ./tests
+
+  tools:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # tools/*.py are stdlib-only (PEP 723 headers declare no dependencies), so
+      # they run on a bare interpreter — no uv, no venv.
+      - name: Markdown -> SQLite parser tests
+        run: python3 tools/test_md_to_sqlite.py
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: web
+        run: bunx tsc --noEmit
+
+      - name: Tests
+        working-directory: web
+        run: bun test
