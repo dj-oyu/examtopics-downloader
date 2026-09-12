@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"examtopics-downloader/internal/models"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"regexp"
@@ -15,20 +16,61 @@ import (
 	"github.com/yuin/goldmark"
 )
 
+// WriteErr is an accumulator that lets a sequence of Printf / Println
+// calls keep the first error and skip subsequent writes. Useful for
+// long sequences of formatted writes (markdown documents, TUI loops)
+// where a disk-full or broken-pipe failure should surface once at the
+// end instead of being silently lost mid-document.
+type WriteErr struct {
+	w   io.Writer
+	err error
+}
+
+// NewWriteErr wraps the given writer for sequential Printf / Println use.
+func NewWriteErr(w io.Writer) *WriteErr { return &WriteErr{w: w} }
+
+// Err returns the first write error encountered, or nil if every
+// underlying write succeeded.
+func (we *WriteErr) Err() error { return we.err }
+
+// Printf formats and writes if no prior error has occurred.
+func (we *WriteErr) Printf(format string, args ...any) {
+	if we.Err() != nil {
+		return
+	}
+	if _, err := fmt.Fprintf(we.w, format, args...); err != nil {
+		we.err = err
+	}
+}
+
+// Println writes the line if no prior error has occurred.
+func (we *WriteErr) Println(s string) {
+	if we.Err() != nil {
+		return
+	}
+	if _, err := fmt.Fprintln(we.w, s); err != nil {
+		we.err = err
+	}
+}
+
 func writeFile(filename string, content any) {
 	file := CreateFile(filename)
 	defer file.Close()
 
+	we := NewWriteErr(file)
 	switch v := content.(type) {
 	case string:
-		fmt.Fprintln(file, v)
+		we.Println(v)
 	case []string:
 		for _, line := range v {
-			fmt.Fprintln(file, line)
+			we.Println(line)
 		}
 	default:
 		log.Printf("writeFile: unsupported content type %T", v)
 		return
+	}
+	if we.Err() != nil {
+		log.Printf("writeFile %s: %v", filename, we.Err())
 	}
 }
 
@@ -55,19 +97,20 @@ func WriteData(dataList []models.QuestionData, outputPath string, commentBool bo
 	file := CreateFile(outputPath)
 	defer file.Close()
 
-	fmt.Fprintf(file, "# Exam Topics Questions\n\n")
-	fmt.Fprintf(file, "@thatonecodes\n\n")
+	we := NewWriteErr(file)
+	we.Printf("# Exam Topics Questions\n\n")
+	we.Printf("@thatonecodes\n\n")
 
 	for _, data := range dataList {
 		if data.Title == "" {
 			continue
 		}
 
-		fmt.Fprintf(file, "## %s\n\n", data.Title)
-		fmt.Fprintf(file, "%s\n\n", data.Header)
+		we.Printf("## %s\n\n", data.Title)
+		we.Printf("%s\n\n", data.Header)
 
 		if data.Content != "" {
-			fmt.Fprintf(file, "%s\n\n", data.Content)
+			we.Printf("%s\n\n", data.Content)
 		}
 
 		// Suggested Answer line — the community-voted answer (full letter set
@@ -81,18 +124,22 @@ func WriteData(dataList []models.QuestionData, outputPath string, commentBool bo
 		}
 
 		for _, question := range data.Questions {
-			fmt.Fprintf(file, "%s\n\n", question)
+			we.Printf("%s\n\n", question)
 		}
 
-		fmt.Fprintf(file, "**Answer: %s**\n\n", data.Answer)
-		fmt.Fprintf(file, "**Timestamp: %s**\n\n", data.Timestamp)
-		fmt.Fprintf(file, "[View on ExamTopics](%s)\n\n", data.QuestionLink)
+		we.Printf("**Answer: %s**\n\n", data.Answer)
+		we.Printf("**Timestamp: %s**\n\n", data.Timestamp)
+		we.Printf("[View on ExamTopics](%s)\n\n", data.QuestionLink)
 
 		if commentBool {
-			fmt.Fprintf(file, "Comments: %s\n", data.Comments)
+			we.Printf("Comments: %s\n", data.Comments)
 		}
 
-		fmt.Fprintf(file, "----------------------------------------\n\n")
+		we.Printf("----------------------------------------\n\n")
+	}
+	if we.Err() != nil {
+		log.Printf("WriteData %s: %v", outputPath, we.Err())
+		return
 	}
 
 	switch fileType {
@@ -182,7 +229,9 @@ func deleteMarkdownFile(filePath string) {
 
 	if input == "y" || input == "yes" {
 		fmt.Println("Deleting file...")
-		os.Remove(filePath)
+		if err := os.Remove(filePath); err != nil {
+			log.Printf("delete %s: %v", filePath, err)
+		}
 	} else {
 		fmt.Println("Keeping file.")
 	}

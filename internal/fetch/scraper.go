@@ -14,7 +14,6 @@ import (
 	"examtopics-downloader/internal/utils"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/cheggaaa/pb/v3"
 )
 
 // cleanAnswer normalizes the raw text from `.correct-answer` into a compact
@@ -209,7 +208,7 @@ func fetchAllPageLinksConcurrently(providerName, grepStr string, numPages, concu
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, concurrency)
 	results := make(chan []string, numPages)
-	bar := pb.StartNew(numPages)
+	bar := utils.NewProgressBar("page links", numPages)
 	startTime := utils.StartTime()
 
 	rateLimiter := utils.CreateRateLimiter(constants.RequestsPerSecond)
@@ -272,7 +271,7 @@ func GetAllPages(providerName string, grepStr string) []models.QuestionData {
 	sem := make(chan struct{}, constants.MaxConcurrentRequests)
 	results := make([]*models.QuestionData, len(sortedLinks))
 	startTime := utils.StartTime()
-	bar := pb.StartNew(len(sortedLinks))
+	bar := utils.NewProgressBar("question pages", len(sortedLinks))
 
 	rateLimiter := utils.CreateRateLimiter(constants.RequestsPerSecond)
 	defer rateLimiter.Stop()

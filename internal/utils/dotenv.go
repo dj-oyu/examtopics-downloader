@@ -2,8 +2,12 @@ package utils
 
 import (
 	"bufio"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+
+	"examtopics-downloader/internal/config"
 )
 
 // LoadDotEnv reads KEY=VALUE pairs from path and sets each in the process
@@ -20,7 +24,7 @@ func LoadDotEnv(path string) error {
 		}
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
@@ -48,4 +52,48 @@ func LoadDotEnv(path string) error {
 		}
 	}
 	return sc.Err()
+}
+
+// LoadDotEnvAuto walks the .env search order from
+// docs/plans/portable-builds.md §3.5 and merges each existing file's
+// keys into the process environment. Higher-priority paths come first;
+// because LoadDotEnv leaves already-set keys alone, the first file to
+// define a key wins and subsequent files only fill in missing keys.
+//
+// Search order:
+//  1. EXAMTOPICS_ENV_FILE (explicit override)
+//  2. <cwd>/.env
+//  3. <bin dir>/.env
+//  4. <user config dir>/.env (XDG_CONFIG_HOME / APPDATA)
+//
+// Missing files are silently skipped so the function works in
+// environments where only some of these locations exist.
+func LoadDotEnvAuto() error {
+	for _, p := range dotEnvCandidatePaths() {
+		if err := LoadDotEnv(p); err != nil {
+			return fmt.Errorf("load %s: %w", p, err)
+		}
+	}
+	return nil
+}
+
+// dotEnvCandidatePaths returns .env search locations in priority order
+// (highest first). Mirrors config.candidatePaths but scoped to the
+// secrets file, sharing the user-config dir resolution via
+// config.UserConfigDir so the two paths stay co-located by design.
+func dotEnvCandidatePaths() []string {
+	var out []string
+	if v := os.Getenv("EXAMTOPICS_ENV_FILE"); v != "" {
+		out = append(out, v)
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		out = append(out, filepath.Join(cwd, ".env"))
+	}
+	if exe, err := os.Executable(); err == nil {
+		out = append(out, filepath.Join(filepath.Dir(exe), ".env"))
+	}
+	if dir := config.UserConfigDir(); dir != "" {
+		out = append(out, filepath.Join(dir, ".env"))
+	}
+	return out
 }

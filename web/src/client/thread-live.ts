@@ -11,7 +11,7 @@ type ReasonCode = "comprehension" | "spec" | "ambiguous" | "translation";
 type Citation = { url: string; title?: string };
 
 type Message = {
-  id: number;
+  id: string;
   role: Role;
   author: string | null;
   content: string;
@@ -21,7 +21,7 @@ type Message = {
   created_at: string;
 };
 
-type MessagesPayload = { id: number; status: string; messages: Message[] };
+type MessagesPayload = { id: string; status: string; messages: Message[] };
 
 type ThreadEvent =
   | { type: "spawning" }
@@ -138,7 +138,7 @@ const renderMessage = (m: Message): HTMLLIElement => {
     head,
     body
   );
-  li.dataset.msgId = String(m.id);
+  li.dataset.msgId = m.id;
   if (m.role === "agent" && m.citations.length > 0) {
     li.append(renderCitations(m.citations));
   }
@@ -153,7 +153,7 @@ const REPLY_TEXTAREA_BUSY =
   "w-full px-2 py-1 border rounded text-sm bg-gray-100 text-gray-400 cursor-not-allowed";
 const REPLY_TEXTAREA_IDLE = "w-full px-2 py-1 border rounded text-sm ";
 
-function initThreadLive({ slug, tid }: { slug: string; tid: number }): void {
+function initThreadLive({ slug, tid }: { slug: string; tid: string }): void {
   const ol = document.getElementById(`messages-${tid}`);
   const status = document.getElementById(`agent-status-${tid}`);
   const thinking = document.getElementById(`agent-thinking-${tid}`);
@@ -212,7 +212,7 @@ function initThreadLive({ slug, tid }: { slug: string; tid: number }): void {
         )
       );
       for (const m of data.messages) {
-        if (!seen.has(String(m.id))) ol.append(renderMessage(m));
+        if (!seen.has(m.id)) ol.append(renderMessage(m));
       }
       if (data.status !== "open") location.reload();
     } catch (e) {

@@ -6,10 +6,29 @@ import (
 	"log"
 	"os"
 
+	"examtopics-downloader/internal/config"
 	"examtopics-downloader/internal/fetch"
 	"examtopics-downloader/internal/sqlite"
 	"examtopics-downloader/internal/utils"
 )
+
+// version is overridden at build time via -ldflags="-X main.version=$tag"
+// in release.yml; "dev" is the default for un-tagged local builds.
+var version = "dev"
+
+// fetchOpenOpts loads the runtime config and returns the OpenOpts used
+// by runSQLiteMode. Backup=true takes a .pre-003.bak snapshot before
+// migration 003 runs; HostID stamps preserved rows with the local
+// machine's identifier. A config-load error degrades to a backup-only
+// open so a user without a config.json can still scrape — preservation
+// rows fall back to a hostname-derived id in that case.
+func fetchOpenOpts() sqlite.OpenOpts {
+	cfg, err := config.Load()
+	if err != nil {
+		return sqlite.OpenOpts{Backup: true}
+	}
+	return sqlite.OpenOpts{HostID: cfg.HostID, Backup: true}
+}
 
 // shouldEmitMarkdown decides whether we should run the legacy Markdown writer
 // path. The default is "yes" (preserves prior behavior). The only case we skip
@@ -42,6 +61,17 @@ func warnOnFetchFailures() {
 }
 
 func main() {
+	// Subcommand dispatch — see cmd/dispatch.go. The shim sits ahead of
+	// upstream's main() body so new subcommand handling does not
+	// interleave with the legacy flag-style scrape logic. This is the
+	// ONLY structural change to upstream's main(); future upstream
+	// patches to the body below apply cleanly because the shim is at a
+	// boundary they never touch.
+	if exit, ok := dispatchSubcommand(os.Args[1:]); ok {
+		os.Exit(exit)
+	}
+
+	// ----- legacy upstream main() body below -----
 	// Best-effort load of ./.env so a committed PAT in $GH_PAT is picked up
 	// without the user having to `source` it. Existing env vars win.
 	if err := utils.LoadDotEnv(".env"); err != nil {
@@ -58,7 +88,13 @@ func main() {
 	noCache := flag.Bool("no-cache", false, "Optional argument, set to disable looking through cached data on github")
 	token := flag.String("t", "", "GitHub PAT for cached scrape (env GH_PAT used when flag is empty)")
 	sqlitePath := flag.String("sqlite", "", "Optional path to a SQLite DB. When set, scraped data is written directly into this DB (cache JSON preserves all fields; manual fallback writes a subset).")
+	versionFlag := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Println(version)
+		os.Exit(0)
+	}
 
 	// Fall back to GH_PAT (possibly loaded from .env) when -t is empty.
 	if *token == "" {
@@ -133,11 +169,11 @@ func main() {
 // we surface the silent "0 matches" cases (bad -s grep, GitHub 1000-listing
 // cap miss without manual hits).
 func runSQLiteMode(path, provider, grep, token string, noCache, saveUrls bool) error {
-	db, err := sqlite.Open(path)
+	db, err := sqlite.OpenWith(path, fetchOpenOpts())
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	w := sqlite.NewWriter(db)
 	if err := w.Begin(); err != nil {

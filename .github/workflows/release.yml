@@ -1,0 +1,192 @@
+# Multi-platform release pipeline for examtopicsdl (Go CLI) and
+# examtopics-web (Bun server). On tag push (vX.Y.Z) the matrix builds
+# fan out, then a final job uploads every artifact to a GitHub
+# Release. PRs and manual dispatches run the same builds as smoke
+# checks but skip the release step. See §4 of docs/plans/portable-
+# builds.md for the design.
+
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "tools/**"
+      - "web/**"
+      - "go.mod"
+      - "go.sum"
+      - "migrations/**"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+# go-build / bun-build only run after their respective check job
+# (go-check / bun-check) passes — see `needs:` on each matrix job
+# below. That means a failed `go test -race` or `bun test` aborts
+# the matrix before any binary is built, and the release job is
+# itself gated on both matrix jobs succeeding. Tests gate builds
+# without needing an extra explicit barrier.
+
+# Cancel superseded runs on the same ref so a quick succession of
+# PR pushes doesn't queue up duplicate matrix builds.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+          cache: true
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "$out"
+            echo "::error::gofmt found formatting issues"
+            exit 1
+          fi
+      - name: vet
+        run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+      - name: skill sync drift
+        # tools/skillsync is wired into //go:generate in
+        # internal/translate/translate.go. Running it should be a no-op
+        # against committed copies; any diff means a destination file
+        # was edited directly. CI fails the PR so the contributor can
+        # update the canonical skills/ or agents/ master instead.
+        run: |
+          go generate ./...
+          if ! git diff --exit-code; then
+            echo "::error::skill sync drift — edit skills/exam-translator.md or agents/exam-translator-worker.md, then run \`go generate ./...\`"
+            exit 1
+          fi
+      - name: tests
+        run: go test -race -count=1 ./...
+
+  tools-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python tooling setup
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # tools/*.py are stdlib-only (PEP 723 headers declare no dependencies), so
+      # a bare interpreter is enough: no uv, no venv.
+      - name: Markdown -> SQLite parser tests
+        run: python3 tools/test_md_to_sqlite.py
+
+  bun-check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      # `bun fmt` ships with Bun 1.4+; until we adopt it (or wire
+      # Biome / Prettier — task 4-G of the plan) we settle for
+      # typecheck + tests as the gating signal.
+      - run: bun run typecheck
+      - run: bun test
+
+  go-build:
+    needs: go-check
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux,   arch: amd64, ext: ""     }
+          - { os: linux,   arch: arm64, ext: ""     }
+          - { os: windows, arch: amd64, ext: ".exe" }
+          - { os: windows, arch: arm64, ext: ".exe" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+          cache: true
+      - name: build ${{ matrix.os }}/${{ matrix.arch }}
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        # -trimpath strips the build host's path from the binary;
+        # -s -w drop the symbol table + DWARF debug info; main.version
+        # is filled at link time from the tag (or "dev" on a PR).
+        run: |
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags="-s -w -X main.version=${GITHUB_REF_NAME:-dev}" \
+            -o dist/examtopicsdl-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} \
+            ./cmd
+      - uses: actions/upload-artifact@v4
+        with:
+          name: examtopicsdl-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
+
+  bun-build:
+    needs: bun-check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: bun-linux-x64,   os: linux,   arch: amd64, ext: ""     }
+          - { target: bun-linux-arm64, os: linux,   arch: arm64, ext: ""     }
+          - { target: bun-windows-x64, os: windows, arch: amd64, ext: ".exe" }
+          # bun-windows-arm64 is recognized by Bun 1.3.13 but its
+          # cross-compile binary download was unreliable in local
+          # testing. Re-add once a clean compile is confirmed on a
+          # CI runner; until then Windows arm64 users build from
+          # source via `bun src/server.tsx`.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: compile ${{ matrix.target }}
+        run: |
+          mkdir -p dist
+          bun build --compile --minify \
+            --target=${{ matrix.target }} \
+            src/server.tsx \
+            --outfile dist/examtopics-web-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: examtopics-web-${{ matrix.os }}-${{ matrix.arch }}
+          path: web/dist/*
+
+  release:
+    # Only attach to a Release on tag push. PR / dispatch runs end
+    # at the matrix builds and leave the artifacts on the run page.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [go-build, bun-build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true

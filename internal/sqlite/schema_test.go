@@ -13,7 +13,7 @@ func columnsOf(t *testing.T, db *sql.DB, table string) map[string]struct{} {
 	if err != nil {
 		t.Fatalf("PRAGMA table_info(%s): %v", table, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	cols := map[string]struct{}{}
 	for rows.Next() {
 		var cid int
@@ -34,7 +34,7 @@ func tablesIn(t *testing.T, db *sql.DB) map[string]struct{} {
 	if err != nil {
 		t.Fatalf("query sqlite_master: %v", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	tabs := map[string]struct{}{}
 	for rows.Next() {
 		var name string
@@ -53,18 +53,21 @@ func TestOpen_CreatesAllOwnedTables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
+	// Open() now applies migration 003 (multi-host sync), so attempts /
+	// explanation_threads / explanation_messages exist with the UUIDv7
+	// BLOB-PK schema alongside the upstream-owned questions / choices /
+	// discussion tables. Pre-migration this test asserted the opposite —
+	// see git history for the legacy ownership boundary.
 	tabs := tablesIn(t, db)
-	for _, want := range []string{"questions", "choices", "discussion"} {
+	for _, want := range []string{
+		"questions", "choices", "discussion",
+		"attempts", "explanation_threads", "explanation_messages",
+		"schema_version",
+	} {
 		if _, ok := tabs[want]; !ok {
 			t.Errorf("expected table %q to exist after Open, tables=%v", want, tabs)
-		}
-	}
-	// Tables we must NOT touch — these are owned by web/db.ts and translate.py.
-	for _, owned := range []string{"attempts", "explanation_threads", "explanation_messages"} {
-		if _, ok := tabs[owned]; ok {
-			t.Errorf("Open should NOT create %q (owned elsewhere); found in fresh DB", owned)
 		}
 	}
 }
@@ -75,7 +78,7 @@ func TestOpen_QuestionsHasAllNewColumns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	cols := columnsOf(t, db, "questions")
 	for _, want := range []string{
@@ -100,13 +103,13 @@ func TestOpen_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
-	db1.Close()
+	_ = db1.Close()
 
 	db2, err := Open(path)
 	if err != nil {
 		t.Fatalf("second Open: %v", err)
 	}
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 	cols := columnsOf(t, db2, "questions")
 	if _, ok := cols["content_hash"]; !ok {
 		t.Errorf("second Open lost content_hash column")
@@ -165,14 +168,14 @@ func TestOpen_MigratesLegacyDBPreservesJa(t *testing.T) {
 		VALUES (1, 'A', 'first', '一番'), (1, 'B', 'second', '二番')`); err != nil {
 		t.Fatalf("seed choices: %v", err)
 	}
-	legacy.Close()
+	_ = legacy.Close()
 
 	// Run our Open() — should ALTER TABLE to add new cols, leave _ja alone.
 	db, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open after legacy: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	cols := columnsOf(t, db, "questions")
 	for _, want := range []string{"exam_id", "is_mc", "answer_description", "content_hash", "imported_at"} {

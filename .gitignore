@@ -19,6 +19,9 @@ env/
 # === build / deps ===
 node_modules/
 bun.lockb
+# bun build --compile / go build artifacts
+dist/
+web/dist/
 
 # === editor / OS ===
 .claude/

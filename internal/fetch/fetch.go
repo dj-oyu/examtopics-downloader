@@ -74,7 +74,7 @@ func fetchURL(url string, client http.Client, notFoundIsExpected bool) []byte {
 
 		if resp.StatusCode == http.StatusOK {
 			body, err := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if err != nil {
 				log.Printf("failed to read response body: %v", err)
 				fetchFailures.Add(1)
@@ -86,7 +86,7 @@ func fetchURL(url string, client http.Client, notFoundIsExpected bool) []byte {
 		retryable := utils.RetryableStatus(resp.StatusCode)
 		retryAfter := utils.RetryAfterDelay(resp)
 		status := resp.StatusCode
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		if !retryable {
 			hint := ""

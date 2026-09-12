@@ -1,11 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import { ThreadPanel } from "../Thread";
 import {
+  fixtureId,
   makeMessage,
   makeQuestion,
   makeThreadWithMessages,
 } from "./fixtures";
 import { renderToString } from "./render";
+
+// Stable 26-char base32 ids so HTML attribute / regex assertions can
+// pin exact strings instead of random UUIDv7 output. fixtureId(n)
+// pads small integers into the canonical id shape, keeping these
+// tests close to their pre-4-E form while exercising the new types.
+const T9 = fixtureId(9);
+const T7 = fixtureId(7);
+const M1 = fixtureId(1);
+const M2 = fixtureId(2);
+const M100 = fixtureId(100);
+const M101 = fixtureId(101);
 
 describe("ThreadPanel — no thread", () => {
   test("renders the create-thread form pointing at /q/:id/threads", async () => {
@@ -22,12 +34,12 @@ describe("ThreadPanel — with messages", () => {
   test("renders user as plain text and agent as markdown HTML", async () => {
     const thread = makeThreadWithMessages({}, [
       makeMessage({
-        id: 100,
+        id: M100,
         role: "user",
         content: "なぜ C が正解？",
       }),
       makeMessage({
-        id: 101,
+        id: M101,
         role: "agent",
         author: "claude-code",
         content: "**Aurora Backtracking** は同一クラスター内で巻き戻せます。",
@@ -47,13 +59,13 @@ describe("ThreadPanel — with messages", () => {
     expect(html).toContain("<strong>Aurora Backtracking</strong>");
     expect(html).toContain('class="prose prose-sm max-w-none leading-relaxed"');
     // each message bubble carries data-msg-id for client-side dedup
-    expect(html).toContain('data-msg-id="100"');
-    expect(html).toContain('data-msg-id="101"');
+    expect(html).toContain(`data-msg-id="${M100}"`);
+    expect(html).toContain(`data-msg-id="${M101}"`);
   });
 
   test("awaiting badge derives from last message role", async () => {
     const userLast = makeThreadWithMessages({}, [
-      makeMessage({ id: 1, role: "user" }),
+      makeMessage({ id: M1, role: "user" }),
     ]);
     const userHtml = await renderToString(
       <ThreadPanel slug="x" q={makeQuestion()} thread={userLast} />
@@ -61,8 +73,8 @@ describe("ThreadPanel — with messages", () => {
     expect(userHtml).toContain("エージェント返信待ち");
 
     const agentLast = makeThreadWithMessages({}, [
-      makeMessage({ id: 1, role: "user" }),
-      makeMessage({ id: 2, role: "agent", content: "Reply." }),
+      makeMessage({ id: M1, role: "user" }),
+      makeMessage({ id: M2, role: "agent", content: "Reply." }),
     ]);
     const agentHtml = await renderToString(
       <ThreadPanel slug="x" q={makeQuestion()} thread={agentLast} />
@@ -71,7 +83,7 @@ describe("ThreadPanel — with messages", () => {
   });
 
   test("explainPending=true renders the inline header dot AND a thinking bubble", async () => {
-    const thread = makeThreadWithMessages({ id: 9 });
+    const thread = makeThreadWithMessages({ id: T9 });
     const html = await renderToString(
       <ThreadPanel
         slug="x"
@@ -82,19 +94,23 @@ describe("ThreadPanel — with messages", () => {
     );
     // header inline status
     expect(html).toMatch(
-      /id="agent-status-9"[^>]*class="ml-2 text-xs inline-flex items-center gap-1 text-blue-600"/
+      new RegExp(
+        `id="agent-status-${T9}"[^>]*class="ml-2 text-xs inline-flex items-center gap-1 text-blue-600"`
+      )
     );
     expect(html).toContain("🤖 エージェント応答中…");
     // chat-style thinking bubble after the messages list
     expect(html).toMatch(
-      /id="agent-thinking-9"[^>]*class="mt-2 pl-3 py-2 border-l-4 border-blue-400 bg-blue-50"[^>]*style=""/
+      new RegExp(
+        `id="agent-thinking-${T9}"[^>]*class="mt-2 pl-3 py-2 border-l-4 border-blue-400 bg-blue-50"[^>]*style=""`
+      )
     );
     expect(html).toContain("animate-bounce");
     expect(html).toContain("応答中…");
   });
 
   test("explainPending=true grays out and disables the reply form", async () => {
-    const thread = makeThreadWithMessages({ id: 9 });
+    const thread = makeThreadWithMessages({ id: T9 });
     const html = await renderToString(
       <ThreadPanel
         slug="x"
@@ -103,9 +119,6 @@ describe("ThreadPanel — with messages", () => {
         explainPending={true}
       />
     );
-    // Reply form's textarea + submit button both carry disabled and the busy
-    // class set. The inline ThreadLiveScript also contains REPLY_BUTTON_IDLE
-    // as a literal string, so anchor matches on the form attributes.
     expect(html).toMatch(
       /<textarea[^>]*name="content"[^>]*disabled=""[^>]*class="[^"]*bg-gray-100/
     );
@@ -118,7 +131,7 @@ describe("ThreadPanel — with messages", () => {
   });
 
   test("explainPending=false leaves the reply form active", async () => {
-    const thread = makeThreadWithMessages({ id: 9 });
+    const thread = makeThreadWithMessages({ id: T9 });
     const html = await renderToString(
       <ThreadPanel slug="x" q={makeQuestion()} thread={thread} />
     );
@@ -133,29 +146,35 @@ describe("ThreadPanel — with messages", () => {
   });
 
   test("explainPending=false hides both the header status and the thinking bubble", async () => {
-    const thread = makeThreadWithMessages({ id: 9 });
+    const thread = makeThreadWithMessages({ id: T9 });
     const html = await renderToString(
       <ThreadPanel slug="x" q={makeQuestion()} thread={thread} />
     );
-    expect(html).toMatch(/id="agent-status-9"[^>]*style="display:none"/);
-    expect(html).toMatch(/id="agent-thinking-9"[^>]*style="display:none"/);
+    expect(html).toMatch(
+      new RegExp(`id="agent-status-${T9}"[^>]*style="display:none"`)
+    );
+    expect(html).toMatch(
+      new RegExp(`id="agent-thinking-${T9}"[^>]*style="display:none"`)
+    );
     expect(html).not.toContain("🤖 エージェント応答中…");
   });
 
   test("renders ThreadLiveScript wired to the thread events endpoint", async () => {
-    const thread = makeThreadWithMessages({ id: 7 });
+    const thread = makeThreadWithMessages({ id: T7 });
     const html = await renderToString(
       <ThreadPanel slug="soa-c03" q={makeQuestion()} thread={thread} />
     );
     expect(html).toContain("/threads/${tid}/events");
-    expect(html).toContain('initThreadLive({"slug":"soa-c03","tid":7})');
+    expect(html).toContain(
+      `initThreadLive({"slug":"soa-c03","tid":"${T7}"})`
+    );
     expect(html).toContain("agent-message");
   });
 
   test("agent message with reason_code='spec' shows the 仕様 badge", async () => {
     const thread = makeThreadWithMessages({}, [
       makeMessage({
-        id: 1,
+        id: M1,
         role: "agent",
         author: "claude-code",
         content: "ALB の listener rule は上から評価される。",
@@ -172,7 +191,7 @@ describe("ThreadPanel — with messages", () => {
   test("citations are rendered as a links list with titles + hosts", async () => {
     const thread = makeThreadWithMessages({}, [
       makeMessage({
-        id: 1,
+        id: M1,
         role: "agent",
         author: "claude-code",
         content: "詳細はドキュメント参照。",
@@ -204,7 +223,7 @@ describe("ThreadPanel — with messages", () => {
   test("malformed citations JSON is silently dropped, not rendered", async () => {
     const thread = makeThreadWithMessages({}, [
       makeMessage({
-        id: 1,
+        id: M1,
         role: "agent",
         content: "x",
         reason_code: null,
