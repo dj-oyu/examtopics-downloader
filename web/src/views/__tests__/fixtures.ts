@@ -1,4 +1,5 @@
 import type {
+  AnswerVerdict,
   Choice,
   ExamSummary,
   Message,
@@ -34,6 +35,21 @@ export function makeChoices(): Choice[] {
   ];
 }
 
+/** A settled verdict: the community agrees with the key. */
+export function makeVerdict(overrides: Partial<AnswerVerdict> = {}): AnswerVerdict {
+  return {
+    status: "settled",
+    accepted: ["C"],
+    community: [
+      { label: "C", votes: 8, pct: 80 },
+      { label: "B", votes: 2, pct: 20 },
+    ],
+    total_votes: 10,
+    rationale: "コミュニティ多数派 C (8/10 = 80%) が正解キーと一致",
+    ...overrides,
+  };
+}
+
 export function makeQuestionDetail(
   overrides: Partial<QuestionDetail> = {}
 ): QuestionDetail {
@@ -41,6 +57,7 @@ export function makeQuestionDetail(
     q: makeQuestion(),
     choices: makeChoices(),
     attempts: [],
+    verdict: makeVerdict(),
     prevId: null,
     nextId: 2,
     ...overrides,

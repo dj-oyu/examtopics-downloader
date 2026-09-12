@@ -13,6 +13,7 @@ import sql002 from "../../migrations/002_thread_agent_session.sql" with { type: 
 // single authoritative SQL file. The Bun text import is just another
 // view onto the same bytes.
 import sql003 from "../../internal/sqlite/migrations/003_multihost_sync.sql" with { type: "text" };
+import sql004 from "../../internal/sqlite/migrations/004_answer_verdicts.sql" with { type: "text" };
 import { loadConfig } from "./config";
 import * as uuidx from "./uuidx";
 
@@ -36,6 +37,7 @@ const MIGRATIONS: Migration[] = [
   { version: 1, name: "001_explanation_messages_grounding", sql: sql001 },
   { version: 2, name: "002_thread_agent_session", sql: sql002 },
   { version: 3, name: "003_multihost_sync", sql: sql003 },
+  { version: 4, name: "004_answer_verdicts", sql: sql004 },
 ];
 
 // Stable host id for rows this Bun process writes. Falls back to a
@@ -429,10 +431,28 @@ export type Attempt = {
 
 export type Progress = { total: number; answered: number; correct: number };
 
+// Answer verdict (migration 004, written by tools/answer_verdict.py).
+//   settled   - the community agrees with suggested_answer
+//   ambiguous - contested: every entry in `accepted` counts as correct, and
+//               `community` is the vote split shown to the learner afterwards
+//   unknown   - no votes and no key (image/HOTSPOT items): nothing to grade
+export type CommunityVote = { label: string; votes: number; pct: number };
+
+export type AnswerVerdict = {
+  status: "settled" | "ambiguous" | "unknown";
+  accepted: string[];
+  community: CommunityVote[];
+  total_votes: number;
+  rationale: string | null;
+};
+
+export type AttemptOutcome = { correct: boolean; ungraded: boolean };
+
 export type QuestionDetail = {
   q: Question;
   choices: Choice[];
   attempts: Attempt[];
+  verdict: AnswerVerdict;
   prevId: number | null;
   nextId: number | null;
 };
@@ -542,7 +562,71 @@ export function parseCitations(json: string | null): Citation[] {
   }
 }
 
-const sortLetters = (s: string) => s.split("").sort().join("");
+const sortLetters = (s: string) =>
+  Array.from(new Set(s.replace(/\s+/g, "").toUpperCase().split(""))).sort().join("");
+
+// Reading a verdict must never be an excuse to skip grading: when the table has
+// no row (a DB that has not run tools/answer_verdict.py --apply yet) the row
+// falls back to the old single-key behaviour.
+const VERDICT_FALLBACK: AnswerVerdict = {
+  status: "settled",
+  accepted: [],
+  community: [],
+  total_votes: 0,
+  rationale: null,
+};
+
+function parseVerdictRow(row: {
+  status: string;
+  accepted: string;
+  community: string;
+  total_votes: number;
+  rationale: string | null;
+} | null): AnswerVerdict {
+  if (!row) return VERDICT_FALLBACK;
+  const jsonArray = <T,>(raw: string): T[] => {
+    try {
+      const v = JSON.parse(raw);
+      return Array.isArray(v) ? (v as T[]) : [];
+    } catch {
+      return [];
+    }
+  };
+  return {
+    status: (row.status as AnswerVerdict["status"]) ?? "settled",
+    accepted: jsonArray<string>(row.accepted),
+    community: jsonArray<CommunityVote>(row.community),
+    total_votes: row.total_votes ?? 0,
+    rationale: row.rationale ?? null,
+  };
+}
+
+type VerdictRow = {
+  status: string;
+  accepted: string;
+  community: string;
+  total_votes: number;
+  rationale: string | null;
+};
+
+function verdictFor(db: Database, qid: number): AnswerVerdict {
+  try {
+    const row = db
+      .query<VerdictRow, [number]>(
+        "SELECT status, accepted, community, total_votes, rationale " +
+          "FROM answer_verdicts WHERE question_id = ?"
+      )
+      .get(qid);
+    return parseVerdictRow(row);
+  } catch {
+    // Pre-migration DB: behave exactly as before the verdict feature existed.
+    return VERDICT_FALLBACK;
+  }
+}
+
+export function getVerdict(slug: string, qid: number): AnswerVerdict {
+  return verdictFor(openDb(slug), qid);
+}
 
 export function discoverExams(): ExamSummary[] {
   let files: string[];
@@ -661,30 +745,50 @@ export function getQuestion(slug: string, id: number): QuestionDetail | null {
     q,
     choices,
     attempts,
+    verdict: verdictFor(db, q.id),
     prevId: idx > 0 ? ids[idx - 1] : null,
     nextId: idx >= 0 && idx < ids.length - 1 ? ids[idx + 1] : null,
   };
 }
 
+/**
+ * Grade one answer against the question's verdict.
+ *
+ * `accepted` decides what counts: on an ambiguous row that is every side of the
+ * argument, so a learner who picks either is right. On a row the verdict calls
+ * `unknown` (no votes, no key) there is nothing to grade against — refusing to
+ * write a row beats recording a false "incorrect".
+ */
 export function recordAttempt(
   slug: string,
   qid: number,
   selected: string,
-  correctAnswer: string
-): boolean {
+  fallbackAnswer: string
+): AttemptOutcome {
   const db = openDb(slug);
-  const isCorrect = sortLetters(selected) === sortLetters(correctAnswer) ? 1 : 0;
+  const verdict = verdictFor(db, qid);
+  const accepted = verdict.accepted.length
+    ? verdict.accepted.map(sortLetters)
+    : fallbackAnswer
+      ? [sortLetters(fallbackAnswer)]
+      : [];
+  if (accepted.length === 0 || !sortLetters(selected)) {
+    return { correct: false, ungraded: true };
+  }
+  const isCorrect = accepted.includes(sortLetters(selected)) ? 1 : 0;
   const id = uuidx.newUuidV7();
   const ts = new Date().toISOString();
   db.run(
     "INSERT INTO attempts(id, question_id, selected, is_correct, attempted_at, host_id) VALUES(?,?,?,?,?,?)",
     [id, qid, selected, isCorrect, ts, hostId()]
   );
-  return isCorrect === 1;
+  return { correct: isCorrect === 1, ungraded: false };
 }
 
 export function listWrong(slug: string) {
   const db = openDb(slug);
+  // Rows the verdict calls `unknown` have no answer to get right; keeping them
+  // in the review queue would nag about something unanswerable.
   return db
     .query<QuestionListRow, []>(
       `SELECT q.*, a.is_correct AS last_correct
@@ -694,7 +798,8 @@ export function listWrong(slug: string) {
                 ROW_NUMBER() OVER (PARTITION BY question_id ORDER BY id DESC) AS rn
          FROM attempts
        ) a ON a.question_id = q.id AND a.rn = 1
-       WHERE a.is_correct = 0
+       LEFT JOIN answer_verdicts v ON v.question_id = q.id
+       WHERE a.is_correct = 0 AND COALESCE(v.status, '') != 'unknown'
        ORDER BY q.topic, q.question_number`
     )
     .all();

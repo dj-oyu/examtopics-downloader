@@ -415,14 +415,18 @@ app.post("/e/:slug/q/:id/attempt", async (c) => {
     .map(String)
     .sort();
   const selected = picks.join("");
-  const correct = q.recordAttempt(slug, id, selected, data.q.suggested_answer);
+  const outcome = q.recordAttempt(slug, id, selected, data.q.suggested_answer);
   const fresh = q.getQuestion(slug, id)!;
   const thread = q.getOpenThread(slug, id);
   return c.html(
     <QuestionView
       slug={slug}
       {...fresh}
-      result={{ correct, selected }}
+      result={{
+        correct: outcome.correct,
+        ungraded: outcome.ungraded,
+        selected,
+      }}
       thread={thread}
       retranslatePending={isRetranslatePending(slug, id)}
       explainPending={thread ? isExplainPending(slug, thread.id) : false}

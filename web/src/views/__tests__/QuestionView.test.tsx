@@ -1,10 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { QuestionView } from "../QuestionView";
-import {
-  makeQuestion,
-  makeQuestionDetail,
-  makeThreadWithMessages,
-} from "./fixtures";
+import { makeQuestion, makeQuestionDetail, makeThreadWithMessages, makeVerdict } from "./fixtures";
 import { renderToString } from "./render";
 
 describe("QuestionView", () => {
@@ -85,5 +81,93 @@ describe("QuestionView", () => {
       />
     );
     expect(after).toContain("✓ 正解");
+  });
+
+  describe("answer verdicts", () => {
+    const ambiguous = makeVerdict({
+      status: "ambiguous",
+      accepted: ["A", "D"],
+      community: [
+        { label: "D", votes: 13, pct: 65 },
+        { label: "A", votes: 6, pct: 30 },
+        { label: "B", votes: 1, pct: 5 },
+      ],
+      total_votes: 20,
+      rationale:
+        "コミュニティ多数派 D (13/20 = 65%) が正解キー A と食い違う。A と D のいずれも正答として扱う。",
+    });
+
+    const render = (extra: Record<string, unknown>) =>
+      renderToString(
+        <QuestionView
+          slug="aif-c01"
+          {...makeQuestionDetail({ q: makeQuestion({ suggested_answer: "A" }), verdict: extra.verdict as never })}
+          thread={null}
+          retranslatePending={false}
+          requestCount={0}
+          {...(extra.props as object)}
+        />
+      );
+
+    test("a contested question is marked before answering, without leaking the split", async () => {
+      const html = await render({ verdict: ambiguous, props: {} });
+      expect(html).toContain("あいまいな問題");
+      expect(html).not.toContain("65%");
+      expect(html).not.toContain("✓ 正解");
+    });
+
+    test("either side of the argument is graded correct, and the split shows afterwards", async () => {
+      const html = await render({
+        verdict: ambiguous,
+        props: { result: { correct: true, selected: "D" } },
+      });
+      expect(html).toContain("✓ 正解");
+      expect(html).toContain("コミュニティ投票（20票）");
+      expect(html).toContain("65%");
+      expect(html).toContain("30%");
+      expect(html).toContain("どちらも正解として扱います");
+    });
+
+    test("a wrong answer names every accepted answer", async () => {
+      const html = await render({
+        verdict: ambiguous,
+        props: { result: { correct: false, selected: "B" } },
+      });
+      expect(html).toContain("✗ 不正解");
+      expect(html).toContain("正答: A または D");
+    });
+
+    test("an unknown verdict is marked and never graded", async () => {
+      const verdict = makeVerdict({
+        status: "unknown",
+        accepted: [],
+        community: [],
+        total_votes: 0,
+        rationale: "コミュニティ投票が無く、正解キーも空のため判定できない",
+      });
+      const before = await render({ verdict, props: {} });
+      expect(before).toContain("正解が特定できない問題");
+
+      const after = await render({
+        verdict,
+        props: { result: { correct: false, ungraded: true, selected: "A" } },
+      });
+      expect(after).toContain("判定不能");
+      expect(after).not.toContain("✗ 不正解");
+      expect(after).toContain("コミュニティ投票は記録されていません");
+    });
+
+    test("a settled question shows the split only after answering", async () => {
+      const before = await render({ verdict: makeVerdict(), props: {} });
+      expect(before).not.toContain("80%");
+      expect(before).not.toContain("あいまいな問題");
+
+      const after = await render({
+        verdict: makeVerdict(),
+        props: { result: { correct: true, selected: "C" } },
+      });
+      expect(after).toContain("80%");
+      expect(after).toContain("20%");
+    });
   });
 });
