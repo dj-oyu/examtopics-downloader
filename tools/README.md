@@ -4,13 +4,13 @@ ExamTopics の問題ダンプを構造化して、AIエージェントで和訳�
 
 ```
 [examtopics.com]
-      │ go run ./cmd/main.go (-c)
+      │ go run ./cmd (-c)
       ▼
    *.md (Markdown ダンプ)
       │ uv run tools/md_to_sqlite.py
       ▼
    *.db (SQLite, _ja カラム空)
-      │ uv run tools/translate.py  ← AIエージェント (Claude Code / Codex / Gemini CLI 等)
+      │ uv run tools/translate.py  ← AIエージェント (Claude Code / Codex CLI 等)
       ▼
    *.db (_ja カラム埋め完了)
 ```
@@ -19,7 +19,7 @@ ExamTopics の問題ダンプを構造化して、AIエージェントで和訳�
 
 - Go 1.24+ (リポジトリルートで `go run` 可能)
 - [uv](https://github.com/astral-sh/uv) (Python スクリプトを依存解決込みで実行)
-- AI エージェント CLI を 1 つ (任意。Claude Code, Codex CLI, Gemini CLI, Aider など)
+- AI エージェント CLI を 1 つ (任意。Claude Code, Codex CLI, Aider など)
 
 ## Step 1. スクレイプ
 
@@ -27,10 +27,10 @@ ExamTopics の問題ダンプを構造化して、AIエージェントで和訳�
 
 ```bash
 # 試験スラッグの確認 (初回のみ)
-go run ./cmd/main.go -p amazon -exams
+go run ./cmd -p amazon -exams
 
 # 本番取得 (-c でディスカッションコメントを含める)
-go run ./cmd/main.go -p amazon -s soa-c03 -c -save-links -o soa-c03.md
+go run ./cmd -p amazon -s soa-c03 -c -save-links -o soa-c03.md
 ```
 
 **チェックポイント:**
@@ -140,7 +140,7 @@ uv run tools/translate.py -d soa-c03.db unsave 1   # _ja 全消去
 どのエージェントでも上記のサブコマンドを呼ぶだけ。例:
 
 - **Claude Code** ─ 「`uv run tools/translate.py -d soa-c03.db` で `next` を呼んで翻訳し `save` で書き戻すループを75回。専門用語は AWS 公式の日本語ドキュメント表記に合わせて。」と指示
-- **Codex CLI / Gemini CLI / Aider** ─ 同じ指示文を渡す。ツールは `bash` 越しに呼べれば良い
+- **Codex CLI / Claude Code / Aider** ─ 同じ指示文を渡す。ツールは `bash` 越しに呼べれば良い
 
 ### 翻訳ガイドライン (エージェントへの指示テンプレ)
 
@@ -179,7 +179,7 @@ choices(
 **指示例:**
 > 「`activate_skill` で `exam-translator` を起動し、`xxx.db` の和訳を完遂せよ。終わるまでバッチを回し続けろ。」
 
-スキル本体が dedicated subagent (`exam-translator-worker`, `max_turns: 200`) に委譲し、UTF-8 セーフな保存 (`scripts/batch_helper.py`) と再起動ループを自動でハンドルします。
+スキル本体 (`skills/exam-translator.md`、LLMクライアント非依存) が dedicated subagent (`agents/exam-translator-worker.md`) に委譲し、UTF-8 セーフな保存 (`_staging.json` → `cat | translate.py bulk-save`) と再起動ループを自動でハンドルします。`examtopicsdl translate -client claude` で各CLIのレイアウトへ展開できます。
 
 この指示により、エージェントはターン制限や文字化け問題を自己解決しながら、最小限の報告でタスクを完了させます。
 

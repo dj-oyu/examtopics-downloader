@@ -16,7 +16,7 @@ The Go side emits two Markdown layouts and can mix them inside one file:
   ``**A:** choice`` lines, ``Suggested Answer:`` present.
 
 Both must parse. The cache layout is not hypothetical: until it was handled,
-``go run ./cmd/main.go`` on the cache path (the recommended one, with a PAT)
+``go run ./cmd`` on the cache path (the recommended one, with a PAT)
 produced a dump that ``md_to_sqlite.py`` refused with "No questions parsed" —
 154 question blocks in, 0 rows out.
 """

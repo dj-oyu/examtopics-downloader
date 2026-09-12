@@ -30,7 +30,7 @@ The first CLI invocation generates a `hostId` and writes it to a per-user `confi
 | --- | --- |
 | `examtopicsdl fetch -p <provider> -s <slug>` | Scrape exam questions (the legacy flag-only form `examtopicsdl -p ... -s ...` still works as a backward-compat shim). |
 | `examtopicsdl quiz -db <path>` | Walk the question list interactively, recording every answer to the `attempts` table with a UUIDv7 + `host_id`. |
-| `examtopicsdl translate retranslate -db <path> -qid <id> -client <claude\|gemini\|codex\|exec>` | Re-translate one row end-to-end: read row → spawn LLM CLI → validate JSON → UPDATE `*_ja`. |
+| `examtopicsdl translate retranslate -db <path> -qid <id> -client <claude\|codex\|exec>` | Re-translate one row end-to-end: read row → spawn LLM CLI → validate JSON → UPDATE `*_ja`. |
 | `examtopicsdl translate -client <name> -dry-run` | Materialize the bundled exam-translator skill into the chosen CLI's expected layout. |
 | `examtopicsdl sync snapshot -d <db> -o <out>` | `VACUUM INTO` a peer-safe snapshot. |
 | `examtopicsdl sync merge -d <local> --from <peer>` | Pull the peer's append-only rows + LWW thread updates. |
@@ -61,7 +61,7 @@ Two layered files, never one. Structural settings live in JSON, secrets stay in 
   },
   "tools": {
     "translate": {
-      "client": "claude",            // claude | gemini | codex | exec — drives `examtopicsdl translate retranslate / explain` adapter
+      "client": "claude",            // claude | codex | exec — drives `examtopicsdl translate retranslate / explain` adapter
       "model": "claude-sonnet-4-6",  // optional --model override; empty leaves the client's own default
       "bin": ""                      // optional path to the client binary; empty falls back to CLAUDE_BIN / PATH
     }
@@ -344,7 +344,7 @@ If `-t` is empty, the program reads `GH_PAT` from the environment. A `./.env` fi
 Write scraped questions directly into a SQLite DB, skipping the Markdown intermediate:
 
 ```bash
-go run ./cmd/main.go -p amazon -s soa-c03 -c -sqlite soa-c03.db
+go run ./cmd fetch -p amazon -s soa-c03 -c -sqlite soa-c03.db   # or ./examtopicsdl fetch ...
 ```
 
 - The DB schema covers `questions` (id, exam, topic, question_number, question_text, suggested_answer, confirmed_answer, timestamp, url UNIQUE, comments) and `choices` (question_id, label, text). `_ja` columns are reserved for translations populated separately by `tools/translate.py`.
