@@ -717,6 +717,18 @@ export function listQuestions(slug: string): QuestionListRow[] {
     .all();
 }
 
+/**
+ * Map a question url back to its row id, so a sync conflict (which the CLI
+ * reports by url) can link straight to the question page.
+ */
+export function findQuestionIdByURL(slug: string, url: string): number | null {
+  const db = openDb(slug);
+  const row = db
+    .query<{ id: number }, [string]>("SELECT id FROM questions WHERE url = ?")
+    .get(url);
+  return row ? row.id : null;
+}
+
 export function getQuestion(slug: string, id: number): QuestionDetail | null {
   const db = openDb(slug);
   const q = db

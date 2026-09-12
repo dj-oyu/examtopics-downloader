@@ -46,14 +46,27 @@ import {
 import type { FetchEvent } from "./admin";
 import { loadConfig } from "./config";
 import {
+  currentSyncJob,
+  isSyncJobInFlight,
+  listPeerCandidates,
+  outgoingDir,
+  resolveSnapshotDownload,
+  startSnapshot,
+  startTranslationsSync,
+  subscribeSync,
+} from "./syncing";
+import type { SyncEvent, SyncJob } from "./syncing";
+import {
   AdminFetch,
   AdminLogin,
+  AdminSync,
   Home,
   Layout,
   QuestionList,
   QuestionView,
   Threads,
 } from "./views";
+import type { AdminSyncJobView } from "./views";
 
 marked.setOptions({ gfm: true, breaks: false });
 
@@ -344,6 +357,218 @@ app.get("/admin/fetch/log", (c) => {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       "X-Accel-Buffering": "no",
+    },
+  });
+});
+
+// ----------------------------------------------------------------------
+// /admin/sync — local multi-machine sync UI (Go `sync translations` /
+// `sync snapshot` driven from the browser).
+// ----------------------------------------------------------------------
+
+function adminSyncJobView(slugFallback: string): AdminSyncJobView | null {
+  const job: SyncJob | null = currentSyncJob();
+  if (!job) return null;
+  const result = job.done?.result ?? null;
+  return {
+    kind: job.kind,
+    slug: job.slug,
+    peerPath: job.peerPath,
+    startedAt: job.startedAt,
+    running: job.done === null,
+    exitCode: job.done?.exitCode ?? null,
+    snapshotPath: job.done?.snapshotPath ?? null,
+    result: result
+      ? {
+          filledQuestions: result.filledQuestions,
+          filledChoices: result.filledChoices,
+          conflictCount: result.conflictCount,
+          overwritten: result.overwritten,
+          preferPeer: result.preferPeer,
+          dryRun: result.dryRun,
+          conflicts: result.conflicts.map((cf) => ({
+            field: cf.field,
+            url: cf.url,
+            qid: safeQuestionId(job.slug || slugFallback, cf.url),
+          })),
+        }
+      : null,
+  };
+}
+
+/** Conflict urls are the peer's; the id only exists if this DB has the row. */
+function safeQuestionId(slug: string, url: string): number | null {
+  try {
+    return q.findQuestionIdByURL(slug, url);
+  } catch {
+    return null;
+  }
+}
+
+function listOutgoingSnapshots(): { name: string; size: number; mtimeMs: number }[] {
+  const dir = outgoingDir();
+  const files = listPeerCandidates(dir);
+  return files.map((f) => ({ name: f.name, size: f.size, mtimeMs: f.mtimeMs }));
+}
+
+function renderAdminSync(
+  c: Context,
+  notice: { kind: "info" | "error"; text: string } | null,
+  status = 200
+) {
+  let exams: { slug: string; name: string; total: number; translated: number }[] = [];
+  try {
+    exams = q.discoverExams().map((e) => ({
+      slug: e.slug,
+      name: e.name,
+      total: e.total,
+      translated: e.translated,
+    }));
+  } catch {
+    exams = [];
+  }
+  let binPath: string | null = null;
+  let binResolveError: string | null = null;
+  try {
+    binPath = resolveDownloaderBin();
+  } catch (e) {
+    binResolveError = e instanceof Error ? e.message : String(e);
+  }
+  return c.html(
+    <AdminSync
+      exams={exams}
+      defaultSlug={exams[0]?.slug ?? ""}
+      peers={listPeerCandidates()}
+      snapshots={listOutgoingSnapshots()}
+      binPath={binPath}
+      binResolveError={binResolveError}
+      job={adminSyncJobView(exams[0]?.slug ?? "")}
+      notice={notice}
+      loginEnabled={getAdminToken() !== null}
+      cookieAuthed={isCookieAuthed(c)}
+      requestCount={reqCount()}
+    />,
+    status as 200
+  );
+}
+
+app.get("/admin/sync", (c) => renderAdminSync(c, null));
+
+app.post("/admin/sync/translations", async (c) => {
+  const form = await c.req.parseBody();
+  const slug = ((form.slug as string) ?? "").trim();
+  const peerRaw = ((form.peerPath as string) ?? "").trim();
+  const peerSel = ((form.peer as string) ?? "").trim();
+  const peerPath = peerRaw || peerSel;
+  const preferPeer = ((form.prefer as string) ?? "local") === "peer";
+  const dryRun = form.dryRun !== undefined;
+
+  if (!slug || !isValidSlug(slug)) {
+    return renderAdminSync(
+      c,
+      { kind: "error", text: `slug が不正です: ${slug || "(空)"}` },
+      400
+    );
+  }
+  if (!peerPath) {
+    return renderAdminSync(
+      c,
+      {
+        kind: "error",
+        text: "相手マシンのスナップショットを選ぶか、パスを指定してください。",
+      },
+      400
+    );
+  }
+  if (isSyncJobInFlight()) {
+    return renderAdminSync(
+      c,
+      { kind: "error", text: "another sync job is in flight" },
+      409
+    );
+  }
+  const started = startTranslationsSync({ slug, peerPath, preferPeer, dryRun });
+  if (!started.ok) {
+    return renderAdminSync(c, { kind: "error", text: started.message }, started.status as 400);
+  }
+  return c.redirect("/admin/sync", 303);
+});
+
+app.post("/admin/sync/snapshot", async (c) => {
+  const form = await c.req.parseBody();
+  const slug = ((form.slug as string) ?? "").trim();
+  if (!slug || !isValidSlug(slug)) {
+    return renderAdminSync(
+      c,
+      { kind: "error", text: `slug が不正です: ${slug || "(空)"}` },
+      400
+    );
+  }
+  if (isSyncJobInFlight()) {
+    return renderAdminSync(
+      c,
+      { kind: "error", text: "another sync job is in flight" },
+      409
+    );
+  }
+  const started = startSnapshot({ slug });
+  if (!started.ok) {
+    return renderAdminSync(c, { kind: "error", text: started.message }, started.status as 400);
+  }
+  return c.redirect("/admin/sync", 303);
+});
+
+app.get("/admin/sync/log", (c) => {
+  const stream = new ReadableStream({
+    start(controller) {
+      const enc = new TextEncoder();
+      const send = (event: SyncEvent) => {
+        try {
+          if (event.type === "line") {
+            controller.enqueue(enc.encode(`data: ${JSON.stringify(event)}\n\n`));
+          } else {
+            controller.enqueue(
+              enc.encode(`event: done\ndata: ${JSON.stringify(event.done)}\n\n`)
+            );
+          }
+        } catch {}
+      };
+      const unsub = subscribeSync(send);
+      controller.enqueue(enc.encode(`: connected\n\n`));
+      const keepAlive = setInterval(() => {
+        try {
+          controller.enqueue(enc.encode(`: ping\n\n`));
+        } catch {}
+      }, 25000);
+      const abort = () => {
+        clearInterval(keepAlive);
+        unsub();
+        try {
+          controller.close();
+        } catch {}
+      };
+      c.req.raw.signal.addEventListener("abort", abort);
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "X-Accel-Buffering": "no",
+    },
+  });
+});
+
+app.get("/admin/sync/download", (c) => {
+  const name = c.req.query("name") ?? "";
+  const path = resolveSnapshotDownload(name);
+  if (!path) return c.text("not found", 404);
+  const file = Bun.file(path);
+  return new Response(file, {
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "Content-Disposition": `attachment; filename="${name.replace(/"/g, "")}"`,
     },
   });
 });

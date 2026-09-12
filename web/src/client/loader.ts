@@ -16,9 +16,12 @@ import threadLiveImport from "./thread-live.ts" with { type: "text" };
 import questionLiveImport from "./question-live.ts" with { type: "text" };
 // @ts-ignore: bun text import attribute returns the raw source as a string
 import adminFetchImport from "./admin-fetch.ts" with { type: "text" };
+// @ts-ignore: bun text import attribute returns the raw source as a string
+import adminSyncImport from "./admin-sync.ts" with { type: "text" };
 const threadLiveSource: string = threadLiveImport;
 const questionLiveSource: string = questionLiveImport;
 const adminFetchSource: string = adminFetchImport;
+const adminSyncSource: string = adminSyncImport;
 
 const transpiler = new Bun.Transpiler({ loader: "ts", target: "browser" });
 
@@ -26,6 +29,7 @@ const sources: Record<string, string> = {
   "thread-live": threadLiveSource,
   "question-live": questionLiveSource,
   "admin-fetch": adminFetchSource,
+  "admin-sync": adminSyncSource,
 };
 
 const cache = new Map<string, string>();
