@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"examtopics-downloader/internal/constants"
 	"examtopics-downloader/internal/models"
@@ -20,7 +21,35 @@ import (
 
 var client = utils.NewHTTPClient()
 
+// fetchFailures counts URLs that FetchURL gave up on in this process. A nil
+// body means the caller lost a page (manual path) or a whole cache file's worth
+// of questions (cache path), so runs report it instead of claiming success.
+var fetchFailures atomic.Int64
+
+// FetchFailures reports how many fetches have failed so far in this process.
+func FetchFailures() int { return int(fetchFailures.Load()) }
+
+// FetchURL fetches url, retrying throttling (429) and server errors (5xx) with
+// exponential backoff plus jitter, and honouring Retry-After when present.
+//
+// Anything else — including 403, which is what the GitHub contents API returns
+// once the anonymous 60 requests/hour budget runs out — gives up immediately
+// and is logged with the URL, so a partial run is visible rather than silent.
+// A nil return means this URL's content is lost, and is counted in
+// FetchFailures.
 func FetchURL(url string, client http.Client) []byte {
+	return fetchURL(url, client, false)
+}
+
+// FetchURLProbe is FetchURL for requests whose absence is an expected outcome
+// rather than a loss — probing for a provider's cache directory, where the
+// cache legitimately 404s for providers that were never mirrored. Only 404 is
+// exempted: a 403 there still means we lost cache data.
+func FetchURLProbe(url string, client http.Client) []byte {
+	return fetchURL(url, client, true)
+}
+
+func fetchURL(url string, client http.Client, notFoundIsExpected bool) []byte {
 	backoff := constants.InitalBackoff
 
 	for attempt := 0; attempt <= constants.MaxRetries; attempt++ {
@@ -42,19 +71,37 @@ func FetchURL(url string, client http.Client) []byte {
 			resp.Body.Close()
 			if err != nil {
 				log.Printf("failed to read response body: %v", err)
+				fetchFailures.Add(1)
 				return nil
 			}
 			return body
 		}
+
+		retryable := utils.RetryableStatus(resp.StatusCode)
+		retryAfter := utils.RetryAfterDelay(resp)
+		status := resp.StatusCode
 		resp.Body.Close()
 
-		if resp.StatusCode != http.StatusServiceUnavailable {
-			log.Printf("request failed with status code: %d", resp.StatusCode)
+		if !retryable {
+			hint := ""
+			if status == http.StatusForbidden {
+				hint = " — GitHub/bot rate limit? pass -t <PAT> or set GH_PAT to lift the 60 req/hour anonymous limit"
+			}
+			log.Printf("request failed with status code: %d for %s%s (not retried)", status, url, hint)
+			if !(notFoundIsExpected && status == http.StatusNotFound) {
+				fetchFailures.Add(1)
+			}
 			return nil
+		}
+
+		// Prefer the server's own pacing over our backoff when it asks for more.
+		if retryAfter > backoff {
+			backoff = retryAfter
 		}
 	}
 
 	log.Printf("exhausted retries for URL: %s", url)
+	fetchFailures.Add(1)
 	return nil
 }
 
@@ -137,7 +184,7 @@ func FetchCachedLinks(providerName string, grepStr string, token string) []strin
 	if token != "" {
 		client = utils.NewGitHubClient(token)
 	}
-	resp := FetchURL(baseURL, *client)
+	resp := FetchURLProbe(baseURL, *client)
 
 	var content []models.FileInfo
 
@@ -168,6 +215,7 @@ func FetchCachedLinks(providerName string, grepStr string, token string) []strin
 }
 
 func GetCachedPages(providerName string, grepStr string, token string) []models.QuestionData {
+	failuresBefore := FetchFailures()
 	links := FetchCachedLinks(providerName, grepStr, token)
 	var allData []models.QuestionData
 
@@ -197,5 +245,6 @@ func GetCachedPages(providerName string, grepStr string, token string) []models.
 		allData = append(allData, data)
 	}
 
+	reportFetchFailures("cache scrape", failuresBefore)
 	return utils.SortQuestionDataByPageNumber(allData)
 }

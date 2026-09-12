@@ -1,8 +1,11 @@
 package utils
 
 import (
+	"net/http"
 	"testing"
+	"time"
 
+	"examtopics-downloader/internal/constants"
 	"examtopics-downloader/internal/models"
 )
 
@@ -188,5 +191,67 @@ func TestSortLinksByQuestionNumber_PreservedAfterRefactor(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("idx %d: got %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// Retry policy: throttling and server errors are transient, client errors are
+// not. 403 in particular means "you are out of anonymous GitHub quota" — the
+// caller must report the loss instead of spinning.
+func TestRetryableStatus(t *testing.T) {
+	cases := map[int]bool{
+		200: false,
+		301: false,
+		400: false,
+		403: false,
+		404: false,
+		429: true,
+		500: true,
+		502: true,
+		503: true,
+		504: true,
+	}
+	for code, want := range cases {
+		if got := RetryableStatus(code); got != want {
+			t.Errorf("RetryableStatus(%d) = %v, want %v", code, got, want)
+		}
+	}
+}
+
+func TestRetryAfterDelay(t *testing.T) {
+	mk := func(value string) *http.Response {
+		resp := &http.Response{Header: http.Header{}}
+		if value != "" {
+			resp.Header.Set("Retry-After", value)
+		}
+		return resp
+	}
+
+	if got := RetryAfterDelay(mk("")); got != 0 {
+		t.Errorf("absent header = %v, want 0", got)
+	}
+	if got := RetryAfterDelay(mk("2")); got != 2*time.Second {
+		t.Errorf("delta-seconds = %v, want 2s", got)
+	}
+	if got := RetryAfterDelay(mk("0")); got != 0 {
+		t.Errorf("zero seconds = %v, want 0", got)
+	}
+	if got := RetryAfterDelay(mk("garbage")); got != 0 {
+		t.Errorf("unparseable = %v, want 0", got)
+	}
+	if got := RetryAfterDelay(mk("99999")); got != constants.RetryAfterCap {
+		t.Errorf("huge value = %v, want the cap %v", got, constants.RetryAfterCap)
+	}
+	if got := RetryAfterDelay(nil); got != 0 {
+		t.Errorf("nil response = %v, want 0", got)
+	}
+
+	// HTTP-date form: a past date means no wait, a near-future one is honoured.
+	past := time.Now().Add(-time.Minute).UTC().Format(http.TimeFormat)
+	if got := RetryAfterDelay(mk(past)); got != 0 {
+		t.Errorf("past HTTP-date = %v, want 0", got)
+	}
+	future := time.Now().Add(5 * time.Second).UTC().Format(http.TimeFormat)
+	if got := RetryAfterDelay(mk(future)); got <= 0 || got > 6*time.Second {
+		t.Errorf("future HTTP-date = %v, want ~5s", got)
 	}
 }

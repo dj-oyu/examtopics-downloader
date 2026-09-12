@@ -22,6 +22,25 @@ func shouldEmitMarkdown(sqliteSet, oExplicit bool) bool {
 	return oExplicit
 }
 
+// noQuestionsError explains a scrape that produced nothing. Before this, the
+// manual path wrote a header-only .md and exited 0 — the "silent zero" failure
+// mode that shows up as upstream issues about empty/partial output files.
+func noQuestionsError(provider, grep string) error {
+	return fmt.Errorf(
+		"no questions scraped for provider %q with -s %q: "+
+			"check the exam ID (the filter is a substring match on discussion links, not a slug lookup), "+
+			"and remember the run may also have been throttled (see fetch failures above)",
+		provider, grep)
+}
+
+// warnOnFetchFailures surfaces dropped pages/cache files when the run still
+// produced output, so a partial result is never reported as a clean one.
+func warnOnFetchFailures() {
+	if n := fetch.FetchFailures(); n > 0 {
+		fmt.Fprintf(os.Stderr, "WARNING: %d fetch(es) failed; the output is incomplete.\n", n)
+	}
+}
+
 func main() {
 	// Best-effort load of ./.env so a committed PAT in $GH_PAT is picked up
 	// without the user having to `source` it. Existing env vars win.
@@ -85,6 +104,7 @@ func main() {
 		links := fetch.GetCachedPages(*provider, *grepStr, *token)
 		if len(links) > 0 {
 			utils.WriteData(links, *outputPath, *commentBool, *fileType)
+			warnOnFetchFailures()
 			fmt.Printf("Successfully saved cached output to %s (filetype: %s).\n", *outputPath, *fileType)
 			os.Exit(0)
 		}
@@ -93,10 +113,17 @@ func main() {
 	fmt.Println("Going to manual scraping, cached data failed.")
 	links := fetch.GetAllPages(*provider, *grepStr)
 
+	if len(links) == 0 {
+		fmt.Fprintln(os.Stderr, noQuestionsError(*provider, *grepStr))
+		warnOnFetchFailures()
+		os.Exit(1)
+	}
+
 	if *saveUrls {
 		utils.SaveLinks("saved-links.txt", links)
 	}
 	utils.WriteData(links, *outputPath, *commentBool, *fileType)
+	warnOnFetchFailures()
 	fmt.Printf("Successfully saved output to %s (filetype: %s).\n", *outputPath, *fileType)
 }
 
@@ -148,5 +175,6 @@ func runSQLiteMode(path, provider, grep, token string, noCache, saveUrls bool) e
 		return fmt.Errorf("commit: %w", err)
 	}
 	fmt.Printf("Successfully saved %d questions to %s (cache=%d, manual=%d).\n", total, path, cachedCount, manualCount)
+	warnOnFetchFailures()
 	return nil
 }

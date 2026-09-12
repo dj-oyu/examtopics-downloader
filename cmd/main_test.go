@@ -1,14 +1,32 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+// A scrape that produced nothing used to write a header-only .md and exit 0.
+// The message must point at both plausible causes so the failure is actionable.
+func TestNoQuestionsErrorIsActionable(t *testing.T) {
+	err := noQuestionsError("amazon", "soa-c02")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	msg := err.Error()
+	for _, want := range []string{"amazon", "soa-c02", "substring", "throttled"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message should mention %q, got: %s", want, msg)
+		}
+	}
+}
 
 func TestShouldEmitMarkdown(t *testing.T) {
 	cases := []struct {
-		name       string
-		sqliteSet  bool
-		oExplicit  bool
-		want       bool
-		rationale  string
+		name      string
+		sqliteSet bool
+		oExplicit bool
+		want      bool
+		rationale string
 	}{
 		{
 			name:      "no flags (default behavior)",

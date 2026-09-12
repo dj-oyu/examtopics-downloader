@@ -12,6 +12,11 @@ const MaxRetries = 3
 const InitalBackoff = time.Second
 const BackoffFactor = 2.0
 
+// RetryAfterCap bounds how long a server-provided Retry-After may make a run
+// wait. GitHub's rate-limit reset can be an hour away; waiting that long would
+// look like a hang, so we cap it and let the caller report the failure.
+const RetryAfterCap = 30 * time.Second
+
 // HTTP Transport Tuning (in http client)
 const MaxIdleConns = 100
 const MaxIdleConnsPerHost = 100

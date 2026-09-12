@@ -119,6 +119,7 @@ type cachedSinkResult struct {
 // directly into w (single transaction managed by the caller). Returns the
 // number of questions written.
 func GetCachedPagesToSQLite(providerName, grepStr, token string, w *sqlite.Writer) (int, error) {
+	failuresBefore := FetchFailures()
 	links := FetchCachedLinks(providerName, grepStr, token)
 	if len(links) == 0 {
 		return 0, nil
@@ -144,6 +145,7 @@ func GetCachedPagesToSQLite(providerName, grepStr, token string, w *sqlite.Write
 		}
 		count++
 	}
+	reportFetchFailures("cache scrape (sqlite)", failuresBefore)
 	return count, nil
 }
 
@@ -161,6 +163,7 @@ func feedCachedSink(link string, ch chan<- cachedSinkResult) {
 	}
 	dl, ok := meta["download_url"].(string)
 	if !ok {
+		log.Printf("no download_url in GitHub response for %s — file skipped", link)
 		return
 	}
 	body := FetchURL(dl, *client)
@@ -190,6 +193,7 @@ func feedCachedSink(link string, ch chan<- cachedSinkResult) {
 // Choices are extracted from QuestionData.Questions (the H1-style list of
 // answer items) since the manual path doesn't carry a structured map.
 func GetAllPagesToSQLite(providerName, grepStr string, w *sqlite.Writer) (int, error) {
+	failuresBefore := FetchFailures()
 	baseURL := fmt.Sprintf("https://www.examtopics.com/discussions/%s/", providerName)
 	numPages := getMaxNumPages(baseURL)
 	fmt.Printf("Fetching %d pages for provider '%s'\n", numPages, providerName)
@@ -225,6 +229,7 @@ func GetAllPagesToSQLite(providerName, grepStr string, w *sqlite.Writer) (int, e
 		}
 		count++
 	}
+	reportFetchFailures("manual scrape (sqlite)", failuresBefore)
 	return count, nil
 }
 

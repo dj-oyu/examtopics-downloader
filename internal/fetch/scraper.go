@@ -246,8 +246,17 @@ func fetchAllPageLinksConcurrently(providerName, grepStr string, numPages, concu
 	return all
 }
 
+// reportFetchFailures logs a warning when fetches were lost during a phase, so
+// a truncated run is visible instead of looking like a clean one.
+func reportFetchFailures(phase string, before int) {
+	if failed := FetchFailures() - before; failed > 0 {
+		log.Printf("WARNING: %d fetch(es) failed during %s — the result is incomplete", failed, phase)
+	}
+}
+
 // Main concurrent page scraping logic
 func GetAllPages(providerName string, grepStr string) []models.QuestionData {
+	failuresBefore := FetchFailures()
 	baseURL := fmt.Sprintf("https://www.examtopics.com/discussions/%s/", providerName)
 	numPages := getMaxNumPages(baseURL)
 	fmt.Printf("Fetching %d pages for provider '%s'\n", numPages, providerName)
@@ -298,6 +307,7 @@ func GetAllPages(providerName string, grepStr string) []models.QuestionData {
 	}
 
 	fmt.Printf("Scraping completed in %s.\n", utils.TimeSince(startTime))
+	reportFetchFailures("manual scrape", failuresBefore)
 
 	return finalData
 }

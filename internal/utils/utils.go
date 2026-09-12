@@ -166,6 +166,50 @@ func DelayTime(backoff time.Duration) time.Duration {
 	return backoff + time.Duration(rand.Intn(500))*time.Millisecond
 }
 
+// RetryableStatus reports whether an HTTP status is worth retrying: request
+// throttling (429) and server-side failures (5xx).
+//
+// 403 is deliberately NOT retryable. examtopics.com answers 429 when it
+// throttles, while the GitHub contents API answers 403 once the unauthenticated
+// 60 requests/hour budget is gone — retrying within the same second cannot help
+// there, and the caller must surface the loss instead of pretending success.
+func RetryableStatus(code int) bool {
+	return code == http.StatusTooManyRequests || code >= 500
+}
+
+// RetryAfterDelay reads a response's Retry-After header, accepting either
+// delta-seconds or an HTTP-date, and caps the result at
+// constants.RetryAfterCap. Returns 0 when the header is absent or unusable.
+func RetryAfterDelay(resp *http.Response) time.Duration {
+	if resp == nil {
+		return 0
+	}
+	raw := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	if raw == "" {
+		return 0
+	}
+
+	var d time.Duration
+	if secs, err := strconv.Atoi(raw); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		d = time.Duration(secs) * time.Second
+	} else if when, err := http.ParseTime(raw); err == nil {
+		d = time.Until(when)
+	} else {
+		return 0
+	}
+
+	if d <= 0 {
+		return 0
+	}
+	if d > constants.RetryAfterCap {
+		return constants.RetryAfterCap
+	}
+	return d
+}
+
 func BackoffTime(backoff time.Duration, backoffFactor float64) time.Duration {
 	return time.Duration(float64(backoff) * backoffFactor)
 }
