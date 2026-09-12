@@ -1,25 +1,28 @@
 package models
 
 type QuestionData struct {
-	Title        string
-	Header       string
-	Content      string
-	Questions    []string
-	Answer       string
-	Timestamp    string
-	QuestionLink string
-	Comments     string
+	Title        string   `json:"title"`
+	Header       string   `json:"header"`
+	Content      string   `json:"content"`
+	Questions    []string `json:"questions"`
+	Answer       string   `json:"answer"`
+	Timestamp    string   `json:"timestamp"`
+	QuestionLink string   `json:"question_link"`
+	Comments     string   `json:"comments"`
 
 	// SuggestedAnswer carries the FULL answer string ("BD", "AE", ...) when
 	// available. The legacy Answer field above is kept untouched for MD-output
 	// back-compat; new SQLite-direct writes should consume SuggestedAnswer
 	// instead. When unset (zero value), fall back to Answer.
-	SuggestedAnswer string
+	//
+	// json tag: keeps `-type json` output snake_case-consistent with the
+	// upstream fields above instead of leaking the Go field name.
+	SuggestedAnswer string `json:"suggested_answer"`
 
 	// Extras holds the structured cache-only fields (per-poster discussion,
 	// images, etc.). Nil on the manual scrape path; populated on the cache
 	// path. Consumers that don't need them can ignore the pointer.
-	Extras *QuestionExtras
+	Extras *QuestionExtras `json:"extras,omitempty"`
 }
 
 // QuestionExtras captures fields that are present in the cache JSON but lost

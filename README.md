@@ -195,9 +195,13 @@ Currently we have these types supported:
 - `html` -> generates `examtopics_output.html`
 - `pdf` -> generates `examtopics_output.pdf`
 - `txt` -> generates `examtopics_output.txt`
+- `json` -> generates `examtopics_output.json`
 
 > [!NOTE]  
 > Files are kept in same/similar format as you would see in the `.md` file, for formatting changes, use other arguments.
+
+> [!NOTE]  
+> The `json` type emits structured data (one object per question, with `title`, `header`, `content`, `questions`, `answer`, `timestamp`, `question_link` and `comments`), suitable for programmatic use such as flash-card generators, study apps or further scripting.
 
 ## [For outputted file examples, see the examples folder](examples/google_devops.md)
 

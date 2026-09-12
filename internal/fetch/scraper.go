@@ -43,7 +43,37 @@ func getDataFromLink(link string) *models.QuestionData {
 		allQuestions = append(allQuestions, utils.CleanText(s.Text()))
 	})
 
-	answer := cleanAnswer(doc.Find(".correct-answer").Text())
+	// ExamTopics now embeds the community-voted answer in a hidden JSON
+	// <script> inside .voted-answers-tally instead of the old .correct-answer.
+	answer := ""
+	jsonText := strings.TrimSpace(doc.Find(".voted-answers-tally script").First().Text())
+	if jsonText != "" {
+		var votes []struct {
+			VotedAnswers string `json:"voted_answers"`
+			VoteCount    int    `json:"vote_count"`
+			IsMostVoted  bool   `json:"is_most_voted"`
+		}
+		if err := json.Unmarshal([]byte(jsonText), &votes); err != nil {
+			log.Printf("failed to parse voted-answers JSON for %s: %v", link, err)
+		} else {
+			for _, v := range votes {
+				if v.IsMostVoted {
+					answer = cleanAnswer(v.VotedAnswers)
+					break
+				}
+			}
+			if answer == "" && len(votes) > 0 {
+				answer = cleanAnswer(votes[0].VotedAnswers)
+			}
+		}
+	}
+
+	// Fallback to the legacy selector if the JSON tally is absent.
+	// cleanAnswer (not the old `[0]` slice) keeps the FULL letter sequence, so
+	// multi-correct answers like "BD"/"AE" survive this path too.
+	if answer == "" {
+		answer = cleanAnswer(doc.Find(".correct-answer").Text())
+	}
 
 	return &models.QuestionData{
 		Title:           utils.CleanText(doc.Find("h1").Text()),

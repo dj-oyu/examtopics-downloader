@@ -3,6 +3,7 @@ package utils
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"regexp"
 	"examtopics-downloader/internal/models"
 	"fmt"
@@ -66,6 +67,19 @@ func WriteData(dataList []models.QuestionData, outputPath string, commentBool bo
 	}
 
 	switch fileType {
+	case "json":
+		jsonBytes, err := json.MarshalIndent(dataList, "", "  ")
+		if err != nil {
+			log.Printf("json marshal failed: %v", err)
+			return
+		}
+
+		fileName := strings.TrimSuffix(outputPath, ".md") + ".json"
+		if err := os.WriteFile(fileName, jsonBytes, 0644); err != nil {
+			log.Printf("failed to write json file: %v", err)
+			return
+		}
+		deleteMarkdownFile(outputPath)
 	case "pdf":
 		mdContent, err := os.ReadFile(outputPath)
 		if err != nil {
