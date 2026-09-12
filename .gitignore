@@ -34,6 +34,10 @@ GEMINI.md
 # (tools/skillsync -> .claude/, gitignored above) or materialized at runtime by
 # `examtopicsdl translate -client <name>`.
 
+# === python bytecode (tools/ are stdlib-only scripts, run without a venv) ===
+__pycache__/
+*.pyc
+
 # === secrets: ignore all .env* variants, allow only the schema example ===
 .env*
 !.env.example
