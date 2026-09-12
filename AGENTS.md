@@ -659,8 +659,6 @@ split.
 
 ## Encoding / Windows tips
 
-## Encoding / Windows tips
-
 When piping Japanese (or any non-ASCII) text on Windows PowerShell:
 
 - PowerShell may default `$OutputEncoding` to `US-ASCII`, corrupting UTF-8 bytes
