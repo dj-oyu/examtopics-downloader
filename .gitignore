@@ -12,6 +12,8 @@ env/
 *.db-journal
 *.db-wal
 *.db-shm
+# safety copy db.ts's backupBeforeV3() writes next to a legacy DB
+*.db.pre-003.bak
 /*.md
 !/README.md
 !/AGENTS.md
